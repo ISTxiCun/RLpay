@@ -109,7 +109,11 @@ public class StripeCheckoutClient implements ChannelResultProvider {
             throw new IllegalStateException("Stripe 查单返回了其他会话");
         }
         long amount = session.path("amount_total").longValue();
-        if (!"paid".equals(session.path("payment_status").asText())) {
+        String paymentStatus = session.path("payment_status").asText();
+        if ("unpaid".equals(paymentStatus) && "expired".equals(session.path("status").asText())) {
+            return Optional.of(new Result(CHANNEL_CODE, tradeNo, amount, "EXPIRED", null));
+        }
+        if (!"paid".equals(paymentStatus)) {
             return Optional.of(new Result(CHANNEL_CODE, tradeNo, amount, "PENDING", null));
         }
         JsonNode intent = session.path("payment_intent");

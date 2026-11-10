@@ -2,6 +2,8 @@ package com.zrl.rlpay.payment.stripe;
 
 import com.zrl.rlpay.payment.channel.ChannelResultProvider;
 import com.zrl.rlpay.payment.service.PaymentOrderService;
+import com.zrl.rlpay.payment.service.PaymentResultService;
+import com.zrl.rlpay.payment.job.PaymentResultJobs;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -55,6 +57,7 @@ class StripeCheckoutIntegrationTest {
     @Autowired private PaymentOrderService orders;
     @Autowired private StripeCheckoutService checkout;
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private PaymentResultService results;
     @Autowired private MockMvc mvc;
     @MockitoSpyBean private StripeCheckoutClient stripe;
 
@@ -177,6 +180,71 @@ class StripeCheckoutIntegrationTest {
                     .hasMessageContaining("历史发起缺少原请求参数");
             verify(stripe, never()).create(eq(payment), eq(1290L), anyString());
         } finally {
+            jdbc.update("DELETE FROM stripe_checkout_attempt WHERE payment_order_no = ?", payment);
+            jdbc.update("DELETE FROM payment_order WHERE payment_order_no = ?", payment);
+        }
+    }
+
+    /** 主动查单记录过期，回调可重复确认，任务不会再补查且不返回付款链接。 */
+    @Test
+    void expiredCheckoutStopsPollingAndCanAcknowledgeDuplicateWebhook() throws Exception {
+        String merchant = "IT-STRIPE";
+        String payment = orders.createOrGet(merchant, UUID.randomUUID().toString(), 1290).paymentOrderNo();
+        String trade = "cs_test_" + "e".repeat(58);
+        try {
+            doReturn(new StripeCheckoutClient.Checkout(trade, "https://checkout.stripe.com/c/pay/demo"))
+                    .when(stripe).create(eq(payment), eq(1290L), anyString());
+            checkout.start(merchant, payment);
+            doReturn(Optional.of(new ChannelResultProvider.Result(StripeCheckoutService.CHANNEL_CODE,
+                    trade, 1290, "EXPIRED", null))).when(stripe).queryResult(trade);
+            assertThat(results.query(payment)).isEqualTo(PaymentResultService.Outcome.EXPIRED);
+            var launch = checkout.start(merchant, payment);
+            assertThat(launch.status()).isEqualTo("EXPIRED");
+            assertThat(launch.paymentUrl()).isNull();
+            new PaymentResultJobs(jdbc, java.util.List.of(), results).reconcileDue();
+            verify(stripe, times(1)).queryResult(trade);
+            String body = """
+                    {"livemode":false,"type":"checkout.session.expired","data":{"object":{"id":"%s"}}}
+                    """.formatted(trade);
+            String time = Long.toString(Instant.now().getEpochSecond());
+            String signature = sign("whsec_fixture_not_a_real_key".getBytes(StandardCharsets.UTF_8), time + "." + body);
+            for (int i = 0; i < 2; i++) {
+                mvc.perform(post("/api/payment/webhooks/stripe-test").content(body)
+                                .header("Stripe-Signature", "t=" + time + ",v1=" + signature))
+                        .andExpect(status().isNoContent());
+            }
+            assertThat(orders.findByPaymentOrderNo(merchant, payment).orElseThrow().status()).isEqualTo("EXPIRED");
+        } finally {
+            jdbc.update("DELETE FROM stripe_checkout_attempt WHERE payment_order_no = ?", payment);
+            jdbc.update("DELETE FROM payment_order WHERE payment_order_no = ?", payment);
+        }
+    }
+
+    /** 并发过期与已核实的支付成功不依赖抵达顺序，旧过期不能覆盖成功。 */
+    @Test
+    void verifiedSuccessWinsAnExpiryRace() throws Exception {
+        String merchant = "IT-STRIPE";
+        String payment = orders.createOrGet(merchant, UUID.randomUUID().toString(), 1290).paymentOrderNo();
+        String trade = "cs_test_" + "f".repeat(58);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            doReturn(new StripeCheckoutClient.Checkout(trade, "https://checkout.stripe.com/c/pay/demo"))
+                    .when(stripe).create(eq(payment), eq(1290L), anyString());
+            checkout.start(merchant, payment);
+            var expired = new ChannelResultProvider.Result(StripeCheckoutService.CHANNEL_CODE, trade,
+                    1290, "EXPIRED", null);
+            var paid = new ChannelResultProvider.Result(StripeCheckoutService.CHANNEL_CODE, trade,
+                    1290, "SUCCESS", Instant.now());
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var a = pool.submit(() -> { start.await(); return results.acceptResult(expired); });
+            var b = pool.submit(() -> { start.await(); return results.acceptResult(paid); });
+            start.countDown();
+            a.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(b.get(10, java.util.concurrent.TimeUnit.SECONDS)).isEqualTo(PaymentResultService.Outcome.SUCCESS);
+            assertThat(results.acceptResult(expired)).isEqualTo(PaymentResultService.Outcome.SUCCESS);
+            assertThat(orders.findByPaymentOrderNo(merchant, payment).orElseThrow().status()).isEqualTo("SUCCESS");
+        } finally {
+            pool.shutdownNow();
             jdbc.update("DELETE FROM stripe_checkout_attempt WHERE payment_order_no = ?", payment);
             jdbc.update("DELETE FROM payment_order WHERE payment_order_no = ?", payment);
         }

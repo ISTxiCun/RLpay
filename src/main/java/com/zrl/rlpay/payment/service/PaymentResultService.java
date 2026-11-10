@@ -11,6 +11,6 @@ public interface PaymentResultService {
     Outcome query(String paymentOrderNo);
 
     enum Outcome {
-        SUCCESS, PENDING, RETRY, REJECTED
+        SUCCESS, EXPIRED, PENDING, RETRY, REJECTED
     }
 }

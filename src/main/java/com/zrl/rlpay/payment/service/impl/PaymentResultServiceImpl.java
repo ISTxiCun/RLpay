@@ -41,7 +41,8 @@ public class PaymentResultServiceImpl implements PaymentResultService {
                 || callback.channelTradeNo() == null || callback.channelTradeNo().isBlank()
                 || callback.channelTradeNo().length() > 255 || callback.amountCent() <= 0
                 || !("SUCCESS".equals(callback.status()) && callback.paidAt() != null
-                    || "PENDING".equals(callback.status()) && callback.paidAt() == null)) {
+                    || ("PENDING".equals(callback.status()) || "EXPIRED".equals(callback.status()))
+                        && callback.paidAt() == null)) {
             log.warn("拒绝无效的渠道结果");
             return Outcome.REJECTED;
         }
@@ -90,15 +91,25 @@ public class PaymentResultServiceImpl implements PaymentResultService {
         if ("SUCCESS".equals(order.status())) {
             return Outcome.SUCCESS;
         }
-        if (!"PENDING".equals(order.status())) {
+        if ("EXPIRED".equals(order.status()) && !"SUCCESS".equals(callback.status())) {
+            return Outcome.EXPIRED;
+        }
+        if (!"PENDING".equals(order.status()) && !"EXPIRED".equals(order.status())) {
             return Outcome.RETRY;
         }
         if ("PENDING".equals(callback.status())) {
             return Outcome.PENDING;
         }
+        if ("EXPIRED".equals(callback.status())) {
+            jdbc.update("""
+                    UPDATE payment_order SET status = 'EXPIRED', next_check_at_utc = NULL
+                    WHERE id = ? AND status = 'PENDING'
+                    """, order.id());
+            return Outcome.EXPIRED;
+        }
         int updated = jdbc.update("""
                 UPDATE payment_order SET status = 'SUCCESS', paid_at_utc = ?, next_check_at_utc = NULL
-                WHERE id = ? AND status = 'PENDING'
+                WHERE id = ? AND status IN ('PENDING', 'EXPIRED')
                 """, LocalDateTime.ofInstant(callback.paidAt(), ZoneOffset.UTC), order.id());
         if (updated != 1) {
             throw new IllegalStateException("确认支付状态失败");

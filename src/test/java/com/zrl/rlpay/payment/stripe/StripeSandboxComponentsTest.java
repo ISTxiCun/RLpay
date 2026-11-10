@@ -77,6 +77,19 @@ class StripeSandboxComponentsTest {
         server.verify();
     }
 
+    /** 渠道明确过期且未付款才是过期，普通未付款仍待支付。 */
+    @Test
+    void queryDistinguishesExpiredAndOpenSessions() {
+        server.expect(request -> assertThat(request.getURI().getPath()).endsWith(SESSION))
+                .andRespond(withSuccess(session(false), MediaType.APPLICATION_JSON));
+        server.expect(request -> assertThat(request.getURI().getPath()).endsWith(SESSION))
+                .andRespond(withSuccess(session(false).replace(""livemode":false",
+                        ""livemode":false,"status":"expired""), MediaType.APPLICATION_JSON));
+        assertThat(checkout.queryResult(SESSION).orElseThrow().status()).isEqualTo("PENDING");
+        assertThat(checkout.queryResult(SESSION).orElseThrow().status()).isEqualTo("EXPIRED");
+        server.verify();
+    }
+
     /** 账单使用 Charge 的发生时间和唯一 Checkout 会话号。 */
     @Test
     void billMapsChargeToCheckout() {
@@ -104,13 +117,13 @@ class StripeSandboxComponentsTest {
                 {"livemode":false,"type":"checkout.session.completed","data":{"object":{"id":"%s"}}}
                 """.formatted(SESSION);
         byte[] body = payload.getBytes(StandardCharsets.UTF_8);
-        assertThat(webhook.authenticateCompletion(body, signed(PAID, body))).contains(SESSION);
-        assertThatThrownBy(() -> webhook.authenticateCompletion(body, signed(PAID.minusSeconds(301), body)))
+        assertThat(webhook.authenticateCheckoutEvent(body, signed(PAID, body))).contains(SESSION);
+        assertThatThrownBy(() -> webhook.authenticateCheckoutEvent(body, signed(PAID.minusSeconds(301), body)))
                 .isInstanceOf(IllegalArgumentException.class);
         byte[] live = payload.replace("false", "true").getBytes(StandardCharsets.UTF_8);
-        assertThatThrownBy(() -> webhook.authenticateCompletion(live, signed(PAID, body)))
+        assertThatThrownBy(() -> webhook.authenticateCheckoutEvent(live, signed(PAID, body)))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> webhook.authenticateCompletion(live, signed(PAID, live)))
+        assertThatThrownBy(() -> webhook.authenticateCheckoutEvent(live, signed(PAID, live)))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

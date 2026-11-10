@@ -51,7 +51,7 @@ public class StripeSandboxController {
         }
         java.util.Optional<String> event;
         try {
-            event = webhookVerifier.authenticateCompletion(body, request.getHeader("Stripe-Signature"));
+            event = webhookVerifier.authenticateCheckoutEvent(body, request.getHeader("Stripe-Signature"));
         } catch (IllegalArgumentException invalid) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Stripe Webhook 验签或格式错误");
         }

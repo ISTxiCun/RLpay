@@ -42,8 +42,8 @@ public class StripeWebhookVerifier {
         this.clock = clock;
     }
 
-    /** 先验签再解析，仅接受测试模式的完成事件。 */
-    public Optional<String> authenticateCompletion(byte[] body, String header) {
+    /** 先验签再解析，只处理测试模式的付款完成或会话过期事件。 */
+    public Optional<String> authenticateCheckoutEvent(byte[] body, String header) {
         if (!validSignature(body, header)) {
             throw new IllegalArgumentException("Stripe Webhook 签名无效");
         }
@@ -52,7 +52,8 @@ public class StripeWebhookVerifier {
             if (event == null || !event.path("livemode").isBoolean() || event.path("livemode").asBoolean()) {
                 throw new IllegalArgumentException("仅接受 Stripe 测试事件");
             }
-            if (!"checkout.session.completed".equals(event.path("type").asText())) {
+            String type = event.path("type").asText();
+            if (!"checkout.session.completed".equals(type) && !"checkout.session.expired".equals(type)) {
                 return Optional.empty();
             }
             String tradeNo = event.path("data").path("object").path("id").asText();
