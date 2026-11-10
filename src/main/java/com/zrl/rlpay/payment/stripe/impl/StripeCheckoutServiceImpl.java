@@ -1,6 +1,7 @@
 package com.zrl.rlpay.payment.stripe.impl;
 
 import com.zrl.rlpay.payment.service.PaymentChannelService;
+import com.zrl.rlpay.payment.service.PaymentChannelBinding;
 import com.zrl.rlpay.payment.service.PaymentOrderService;
 import com.zrl.rlpay.payment.service.PaymentResultService;
 import com.zrl.rlpay.payment.stripe.StripeCheckoutService;
@@ -22,6 +23,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class StripeCheckoutServiceImpl implements StripeCheckoutService {
     private final PaymentOrderService orders;
     private final PaymentChannelService channels;
+    private final PaymentChannelBinding binding;
     private final PaymentResultService results;
     private final StripeSandboxClient stripe;
     private final JdbcTemplate jdbc;
@@ -29,9 +31,11 @@ public class StripeCheckoutServiceImpl implements StripeCheckoutService {
 
     /** 仅关联写入需要平台事务。 */
     public StripeCheckoutServiceImpl(PaymentOrderService orders, PaymentChannelService channels,
-            PaymentResultService results, StripeSandboxClient stripe, JdbcTemplate jdbc, PlatformTransactionManager manager) {
+            PaymentResultService results, StripeSandboxClient stripe, PaymentChannelBinding binding,
+            JdbcTemplate jdbc, PlatformTransactionManager manager) {
         this.orders = orders;
         this.channels = channels;
+        this.binding = binding;
         this.results = results;
         this.stripe = stripe;
         this.jdbc = jdbc;
@@ -54,8 +58,8 @@ public class StripeCheckoutServiceImpl implements StripeCheckoutService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "平台订单状态或 USD 金额不支持 Stripe 测试发起");
         }
         jdbc.update("""
-                INSERT INTO stripe_checkout_attempt (payment_order_no, requested_at_utc)
-                VALUES (?, UTC_TIMESTAMP(3))
+                INSERT INTO stripe_checkout_attempt (payment_order_no, requested_at_utc, next_recovery_at_utc)
+                VALUES (?, UTC_TIMESTAMP(3), TIMESTAMPADD(SECOND, 30, UTC_TIMESTAMP(3)))
                 ON DUPLICATE KEY UPDATE payment_order_no = stripe_checkout_attempt.payment_order_no
                 """, paymentNo);
         Boolean insideWindow = jdbc.queryForObject("""
@@ -72,21 +76,15 @@ public class StripeCheckoutServiceImpl implements StripeCheckoutService {
         } catch (org.springframework.web.client.RestClientException failure) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Stripe 测试渠道暂未确认受理");
         }
-        transaction.executeWithoutResult(tx -> {
-            jdbc.update("""
-                    UPDATE payment_order SET status = 'PENDING', channel_code = ?, channel_trade_no = ?
-                    WHERE payment_order_no = ? AND merchant_code = ? AND status = 'CREATED'
-                      AND channel_code IS NULL AND channel_trade_no IS NULL
-                    """, StripeSandboxClient.CODE, checkout.tradeNo(), paymentNo, merchantCode);
-            var trade = jdbc.query("""
-                    SELECT channel_trade_no FROM payment_order WHERE payment_order_no = ? AND channel_code = ?
-                    """, (row, index) -> row.getString(1), paymentNo, StripeSandboxClient.CODE);
-            if (trade.isEmpty() || !checkout.tradeNo().equals(trade.get(0))) {
-                throw new ResponseStatusException(HttpStatus.CONFLICT, "平台支付单已绑定其他渠道交易");
-            }
-            jdbc.update("UPDATE stripe_checkout_attempt SET checkout_url = ? WHERE payment_order_no = ?",
-                    checkout.url(), paymentNo);
-        });
+        try {
+            transaction.executeWithoutResult(tx -> {
+                binding.bind(merchantCode, paymentNo, StripeSandboxClient.CODE, checkout.tradeNo());
+                jdbc.update("UPDATE stripe_checkout_attempt SET checkout_url = ? WHERE payment_order_no = ?",
+                        checkout.url(), paymentNo);
+            });
+        } catch (PaymentChannelBinding.Conflict conflict) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, conflict.getMessage(), conflict);
+        }
         return pending(paymentNo, merchantCode);
     }
 
