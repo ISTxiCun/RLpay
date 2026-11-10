@@ -22,7 +22,7 @@ public class StripeCheckoutRecovery implements ChannelLaunchRecovery {
         var candidates = jdbc.query("""
                 SELECT a.payment_order_no, p.merchant_code
                 FROM stripe_checkout_attempt a JOIN payment_order p ON p.payment_order_no = a.payment_order_no
-                WHERE p.status = 'CREATED' AND a.checkout_url IS NULL
+                WHERE p.status = 'CREATED' AND a.checkout_url IS NULL AND a.request_form IS NOT NULL
                   AND a.requested_at_utc > UTC_TIMESTAMP(3) - INTERVAL 23 HOUR
                   AND (a.next_recovery_at_utc IS NULL OR a.next_recovery_at_utc <= UTC_TIMESTAMP(3))
                 ORDER BY a.next_recovery_at_utc, a.payment_order_no LIMIT 1
@@ -33,7 +33,7 @@ public class StripeCheckoutRecovery implements ChannelLaunchRecovery {
                         UPDATE stripe_checkout_attempt
                         SET next_recovery_at_utc = TIMESTAMPADD(SECOND, 30 * (1 << LEAST(recovery_attempts, 6)), UTC_TIMESTAMP(3)),
                             recovery_attempts = LEAST(recovery_attempts + 1, 6)
-                        WHERE payment_order_no = ? AND checkout_url IS NULL
+                        WHERE payment_order_no = ? AND checkout_url IS NULL AND request_form IS NOT NULL
                           AND requested_at_utc > UTC_TIMESTAMP(3) - INTERVAL 23 HOUR
                           AND (next_recovery_at_utc IS NULL OR next_recovery_at_utc <= UTC_TIMESTAMP(3))
                         """, candidate.paymentNo()) == 1) {
