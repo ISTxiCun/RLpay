@@ -5,7 +5,7 @@ import com.zrl.rlpay.payment.service.PaymentChannelBinding;
 import com.zrl.rlpay.payment.service.PaymentOrderService;
 import com.zrl.rlpay.payment.service.PaymentResultService;
 import com.zrl.rlpay.payment.stripe.StripeCheckoutService;
-import com.zrl.rlpay.payment.stripe.StripeSandboxClient;
+import com.zrl.rlpay.payment.stripe.StripeCheckoutClient;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -25,13 +25,13 @@ public class StripeCheckoutServiceImpl implements StripeCheckoutService {
     private final PaymentChannelService channels;
     private final PaymentChannelBinding binding;
     private final PaymentResultService results;
-    private final StripeSandboxClient stripe;
+    private final StripeCheckoutClient stripe;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transaction;
 
     /** 仅关联写入需要平台事务。 */
     public StripeCheckoutServiceImpl(PaymentOrderService orders, PaymentChannelService channels,
-            PaymentResultService results, StripeSandboxClient stripe, PaymentChannelBinding binding,
+            PaymentResultService results, StripeCheckoutClient stripe, PaymentChannelBinding binding,
             JdbcTemplate jdbc, PlatformTransactionManager manager) {
         this.orders = orders;
         this.channels = channels;
@@ -70,7 +70,7 @@ public class StripeCheckoutServiceImpl implements StripeCheckoutService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "发起幂等窗口已过，需核实渠道后再处理");
         }
 
-        StripeSandboxClient.Checkout checkout;
+        StripeCheckoutClient.Checkout checkout;
         try {
             checkout = stripe.create(paymentNo, order.amountCent());
         } catch (org.springframework.web.client.RestClientException failure) {
@@ -78,7 +78,7 @@ public class StripeCheckoutServiceImpl implements StripeCheckoutService {
         }
         try {
             transaction.executeWithoutResult(tx -> {
-                binding.bind(merchantCode, paymentNo, StripeSandboxClient.CODE, checkout.tradeNo());
+                binding.bind(merchantCode, paymentNo, StripeCheckoutService.CHANNEL_CODE, checkout.tradeNo());
                 jdbc.update("UPDATE stripe_checkout_attempt SET checkout_url = ? WHERE payment_order_no = ?",
                         checkout.url(), paymentNo);
             });
@@ -91,7 +91,7 @@ public class StripeCheckoutServiceImpl implements StripeCheckoutService {
     /** 未关联或结果未确认时返回失败，由 Stripe 重投或后台继续查单。 */
     @Override
     public boolean confirm(String channelTradeNo) {
-        return channels.findByChannelTradeNo(StripeSandboxClient.CODE, channelTradeNo)
+        return channels.findByChannelTradeNo(StripeCheckoutService.CHANNEL_CODE, channelTradeNo)
                 .map(order -> results.query(order.paymentOrderNo()) == PaymentResultService.Outcome.SUCCESS)
                 .orElse(false);
     }

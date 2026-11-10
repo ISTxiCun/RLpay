@@ -1,13 +1,11 @@
 package com.zrl.rlpay.payment.job;
 
-import com.zrl.rlpay.payment.channel.MockPaymentChannel;
 import com.zrl.rlpay.payment.channel.ChannelLaunchRecovery;
 
 import java.util.List;
 import com.zrl.rlpay.payment.service.PaymentResultService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.event.EventListener;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -20,14 +18,6 @@ public class PaymentResultJobs {
     private final JdbcTemplate jdbc;
     private final List<ChannelLaunchRecovery> recovery;
     private final PaymentResultService results;
-
-    /** 进程内回调由模拟渠道发送；缺少关联时要求渠道稍后重投。 */
-    @EventListener
-    public void onCallback(MockPaymentChannel.Callback callback) {
-        if (results.acceptCallback(callback) == PaymentResultService.Outcome.RETRY) {
-            throw new IllegalStateException("渠道关联尚未就绪，稍后重投");
-        }
-    }
 
     /** 每轮从数据库取到期记录，重启后可继续。 */
     @Scheduled(fixedDelayString = "${rlpay.payment.result-job-delay-ms:5000}")

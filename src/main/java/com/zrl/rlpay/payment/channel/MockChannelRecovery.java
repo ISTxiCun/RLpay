@@ -6,6 +6,7 @@ import com.zrl.rlpay.payment.service.PaymentResultService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 /** 模拟渠道知道自己的受理记录，负责重投和补齐关联。 */
@@ -17,6 +18,16 @@ public class MockChannelRecovery implements ChannelLaunchRecovery {
     private final MockPaymentChannel channel;
     private final PaymentChannelService channels;
     private final PaymentResultService results;
+
+    /** 将模拟回调转换为平台结果，关联未就绪时要求重投。 */
+    @EventListener
+    public void onCallback(MockPaymentChannel.Callback callback) {
+        var result = new ChannelResultProvider.Result(callback.channelCode(), callback.channelTradeNo(),
+                callback.amountCent(), callback.status(), callback.paidAt());
+        if (results.acceptResult(result) == PaymentResultService.Outcome.RETRY) {
+            throw new IllegalStateException("渠道关联尚未就绪，稍后重投");
+        }
+    }
 
     /** 先重投到期回调，再恢复模拟渠道已受理的发起请求。 */
     @Override
