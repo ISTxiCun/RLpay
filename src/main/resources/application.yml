@@ -12,3 +12,5 @@ spring:
 rlpay:
   mock-channel:
     timeout-on-first-accept: ${RLPAY_MOCK_CHANNEL_TIMEOUT_ON_FIRST_ACCEPT:false}
+  reconciliation:
+    import-enabled: ${RLPAY_RECONCILIATION_IMPORT_ENABLED:false}
