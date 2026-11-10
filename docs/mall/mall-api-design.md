@@ -80,7 +80,7 @@ mysql --host=127.0.0.1 --user=root --password --default-character-set=utf8mb4 --
 
 订单详情包含 `merchantOrderNo`、`status`、`version`、`totalAmountCent`、可空的 `paymentOrderNo`，以及明细 `items`。明细包含 `productCode`、`productName`、`unitPriceCent`、`quantity`。商品编码作为稳定标识使用。
 
-订单明细至少一行，最多 20 行。同一商品在一笔订单中只能出现一次，每行数量为 1–99。非法明细或金额溢出返回 `400`，商品或订单不存在返回 `404`，商品已停用、草稿版本过期或状态冲突返回 `409`。同一商户订单已有支付单但金额不一致时返回 `409`。支付模块暂时不可用时返回 `503`，调用方可以对同一商户订单重试。
+订单明细至少一行，最多 20 行。同一商品在一笔订单中只能出现一次，每行数量为 1–99。非法明细或金额溢出返回 `400`，商品或订单不存在返回 `404`，商品已停用、草稿版本过期或状态冲突返回 `409`。同一商户订单已有支付单但金额不一致时返回 `409`。商城订单已支付时再次发起，返回原平台支付单号及成功状态，付款链接为空。支付模块暂时不可用时返回 `503`，调用方可以对同一商户订单重试。
 
 ## 商城伪代码
 
@@ -128,7 +128,7 @@ requestPayment(merchantOrderNo):
     商城事务一:
         按订单号锁定订单行
         如果是 DRAFT，将状态改为 PAYMENT_REQUESTED，version 加 1
-        否则要求状态为 PAYMENT_REQUESTED
+        否则要求状态为 PAYMENT_REQUESTED 或 PAID
         request = (MALL_MOCK, merchantOrderNo, order.totalAmountCent)
     提交事务一，释放商城订单行锁
 
@@ -148,7 +148,7 @@ requestPayment(merchantOrderNo):
 
 ## 模拟付款
 
-将 `paymentUrl` 拼到当前 RLpay 服务地址，浏览器打开后可查看金额，并模拟付款。页面上的两种付款操作分别选择生成或跳过渠道成功事件。平台收到成功事件后确认支付。跳过事件时，后台会主动查单并确认平台支付；默认每 5 秒扫描一次，待支付或查询异常时会退避。商城订单的已支付更新由第 5 项负责。
+将 `paymentUrl` 拼到当前 RLpay 服务地址，浏览器打开后可查看金额，并模拟付款。页面上的两种付款操作分别选择生成或跳过渠道成功事件。平台收到成功事件后确认支付。跳过事件时，后台会主动查单并确认平台支付；默认每 5 秒扫描一次，待支付或查询异常时会退避。平台确认成功后，后台投递通知，商城订单更新为 `PAID`。通知未确认时会退避重试，连续失败五次后保留原因，可用内部 `PaymentNotificationService.retryFailed(id)` 重投。升级时 Flyway 会为此前已成功的支付单补建待投递记录。
 
 默认正常返回渠道应答。要模拟渠道已受理但首次应答超时，可以设置 `RLPAY_MOCK_CHANNEL_TIMEOUT_ON_FIRST_ACCEPT=true` 后启动，重新创建一笔商城订单。首次发起返回 `503`；对同一商户订单再次发起会返回同一笔渠道交易的付款链接。
 

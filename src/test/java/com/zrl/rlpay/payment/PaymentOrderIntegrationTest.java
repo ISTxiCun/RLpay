@@ -264,6 +264,8 @@ class PaymentOrderIntegrationTest {
             assertThat(results.acceptCallback(new MockPaymentChannel.Callback(
                     "MOCK", tradeNo, actual.amountCent(), "PENDING", null)))
                     .isEqualTo(PaymentResultService.Outcome.SUCCESS);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM payment_notification WHERE payment_order_no = ?",
+                    Integer.class, paymentNo)).isEqualTo(1);
             assertThat(jdbc.queryForObject("SELECT paid_at_utc FROM payment_order WHERE payment_order_no = ?",
                     java.time.LocalDateTime.class, paymentNo))
                     .isEqualTo(java.time.LocalDateTime.ofInstant(actual.paidAt(), java.time.ZoneOffset.UTC));
@@ -346,6 +348,7 @@ class PaymentOrderIntegrationTest {
                 DELETE FROM mock_channel_trade WHERE payment_order_no IN
                     (SELECT payment_order_no FROM payment_order WHERE merchant_code = ? AND merchant_order_no = ?)
                 """, MallPaymentGateway.MERCHANT_CODE, orderNo);
+        jdbc.update("DELETE FROM payment_notification WHERE merchant_order_no = ?", orderNo);
         jdbc.update("DELETE FROM payment_order WHERE merchant_code = ? AND merchant_order_no = ?",
                 MallPaymentGateway.MERCHANT_CODE, orderNo);
     }

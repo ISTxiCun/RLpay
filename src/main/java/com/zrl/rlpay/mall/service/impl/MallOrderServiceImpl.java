@@ -118,8 +118,8 @@ public class MallOrderServiceImpl implements MallOrderService {
                 order.setStatus(MallOrderStatus.PAYMENT_REQUESTED);
                 updateOrderRow(order);
             }
-            case PAYMENT_REQUESTED -> {
-                // 重试沿用已经冻结的金额。
+            case PAYMENT_REQUESTED, PAID -> {
+                // 已发起或已支付的订单重试时沿用冻结金额。
             }
             default -> throw new ResponseStatusException(HttpStatus.CONFLICT, "当前订单状态不可发起支付");
         }
@@ -137,6 +137,34 @@ public class MallOrderServiceImpl implements MallOrderService {
         } else if (!order.getPaymentOrderNo().equals(paymentOrderNo)) {
             throw new IllegalStateException("支付模块返回的单号与商城已记录的单号不一致");
         }
+    }
+
+    /** 锁定订单后校验通知，支付单号和已支付状态一同写入。 */
+    @Override
+    @Transactional
+    public void confirmPayment(PaymentConfirmation confirmation) {
+        if (confirmation == null || !MallPaymentGateway.MERCHANT_CODE.equals(confirmation.merchantCode())
+                || confirmation.merchantOrderNo() == null || confirmation.merchantOrderNo().isBlank()
+                || confirmation.paymentOrderNo() == null || confirmation.paymentOrderNo().isBlank()
+                || confirmation.paymentOrderNo().length() > 64 || confirmation.amountCent() <= 0) {
+            throw new IllegalArgumentException("无效的商城支付成功通知");
+        }
+        MallOrder order = findOrder(confirmation.merchantOrderNo(), true);
+        if (!order.getMerchantOrderNo().equals(confirmation.merchantOrderNo())
+                || order.getTotalAmountCent() != confirmation.amountCent()
+                || (order.getPaymentOrderNo() != null
+                    && !order.getPaymentOrderNo().equals(confirmation.paymentOrderNo()))) {
+            throw new IllegalStateException("支付成功通知与商城订单不匹配");
+        }
+        if (order.getStatus() == MallOrderStatus.PAID && order.getPaymentOrderNo() != null) {
+            return;
+        }
+        if (order.getStatus() != MallOrderStatus.PAYMENT_REQUESTED) {
+            throw new IllegalStateException("商城订单当前状态不接受支付成功通知");
+        }
+        order.setPaymentOrderNo(confirmation.paymentOrderNo());
+        order.setStatus(MallOrderStatus.PAID);
+        updateOrderRow(order);
     }
 
     /** 按商户订单号查单。写操作用行锁串行处理同一订单。 */

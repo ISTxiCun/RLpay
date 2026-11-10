@@ -28,4 +28,11 @@ public interface MallOrderService {
 
     /** 将支付模块返回的支付单号写回商城订单。 */
     void savePaymentOrderNo(String merchantOrderNo, String paymentOrderNo);
+
+    /** 确认支付模块的进程内成功通知，重复通知按同一结果确认。 */
+    void confirmPayment(PaymentConfirmation confirmation);
+
+    /** 商城校验支付结果所需的订单身份与冻结金额。 */
+    record PaymentConfirmation(String merchantCode, String merchantOrderNo, String paymentOrderNo, long amountCent) {
+    }
 }

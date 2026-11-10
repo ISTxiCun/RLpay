@@ -68,9 +68,10 @@ public class PaymentResultServiceImpl implements PaymentResultService {
     /** 行锁串行核对结果，条件更新保证同一支付单只确认一次。 */
     private Outcome apply(MockPaymentChannel.Callback callback) {
         var orders = jdbc.query("""
-                SELECT id, amount_cent, status FROM payment_order
+                SELECT id, amount_cent, status, payment_order_no, merchant_code, merchant_order_no FROM payment_order
                 WHERE channel_code = ? AND channel_trade_no = ? FOR UPDATE
-                """, (row, index) -> new LocalOrder(row.getLong(1), row.getLong(2), row.getString(3)),
+                """, (row, index) -> new LocalOrder(row.getLong(1), row.getLong(2), row.getString(3),
+                        row.getString(4), row.getString(5), row.getString(6)),
                 callback.channelCode(), callback.channelTradeNo());
         if (orders.isEmpty()) {
             return Outcome.RETRY;
@@ -96,12 +97,18 @@ public class PaymentResultServiceImpl implements PaymentResultService {
         if (updated != 1) {
             throw new IllegalStateException("确认支付状态失败");
         }
+        jdbc.update("""
+                INSERT INTO payment_notification
+                    (payment_order_no, event_type, merchant_code, merchant_order_no, amount_cent, next_attempt_at_utc)
+                VALUES (?, 'PAYMENT_SUCCEEDED', ?, ?, ?, UTC_TIMESTAMP(3))
+                """, order.paymentNo(), order.merchantCode(), order.merchantOrderNo(), order.amountCent());
         return Outcome.SUCCESS;
     }
 
     private record Reference(String channel, String tradeNo, String status) {
     }
 
-    private record LocalOrder(long id, long amountCent, String status) {
+    private record LocalOrder(long id, long amountCent, String status, String paymentNo,
+                              String merchantCode, String merchantOrderNo) {
     }
 }

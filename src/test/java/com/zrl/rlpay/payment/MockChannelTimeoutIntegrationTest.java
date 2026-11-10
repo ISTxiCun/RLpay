@@ -92,6 +92,7 @@ class MockChannelTimeoutIntegrationTest {
             if (paymentNo != null) {
                 jdbc.update("DELETE FROM mock_channel_trade WHERE payment_order_no = ?", paymentNo);
             }
+            jdbc.update("DELETE FROM payment_notification WHERE merchant_order_no = ?", orderNo);
             jdbc.update("DELETE FROM payment_order WHERE merchant_code = ? AND merchant_order_no = ?",
                     MallPaymentGateway.MERCHANT_CODE, orderNo);
         }
@@ -139,6 +140,7 @@ class MockChannelTimeoutIntegrationTest {
                     DELETE FROM mock_channel_trade WHERE payment_order_no IN
                         (SELECT payment_order_no FROM payment_order WHERE merchant_code = ? AND merchant_order_no = ?)
                     """, MallPaymentGateway.MERCHANT_CODE, orderNo);
+            jdbc.update("DELETE FROM payment_notification WHERE merchant_order_no = ?", orderNo);
             jdbc.update("DELETE FROM payment_order WHERE merchant_code = ? AND merchant_order_no = ?",
                     MallPaymentGateway.MERCHANT_CODE, orderNo);
         }
