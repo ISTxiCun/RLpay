@@ -20,6 +20,8 @@ public class PaymentOrder {
     private String merchantOrderNo;
     private Long amountCent;
     private String status;
+    private String channelCode;
+    private String channelTradeNo;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

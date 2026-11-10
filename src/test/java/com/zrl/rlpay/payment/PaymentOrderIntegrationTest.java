@@ -3,7 +3,9 @@ package com.zrl.rlpay.payment;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zrl.rlpay.mall.service.MallOrderService;
 import com.zrl.rlpay.mall.service.MallPaymentGateway;
+import com.zrl.rlpay.payment.channel.MockPaymentChannel;
 import com.zrl.rlpay.payment.service.PaymentAmountConflictException;
+import com.zrl.rlpay.payment.service.PaymentChannelService;
 import com.zrl.rlpay.payment.service.PaymentOrderService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,6 +13,8 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.event.ApplicationEvents;
+import org.springframework.test.context.event.RecordApplicationEvents;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.ArrayList;
@@ -26,12 +30,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.hamcrest.Matchers.containsString;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /** 使用 MySQL 和真实 Spring Bean 验证唯一约束、商户范围和商城交接。 */
 @SpringBootTest
 @AutoConfigureMockMvc
+@RecordApplicationEvents
 class PaymentOrderIntegrationTest {
     @Autowired private PaymentOrderService payments;
     @Autowired private MallOrderService mallOrders;
@@ -39,6 +46,9 @@ class PaymentOrderIntegrationTest {
     @Autowired private JdbcTemplate jdbc;
     @Autowired private MockMvc mvc;
     @Autowired private ObjectMapper json;
+    @Autowired private MockPaymentChannel mockChannel;
+    @Autowired private PaymentChannelService channels;
+    @Autowired private ApplicationEvents events;
 
     /** 并发请求复用同一原单，金额冲突与跨商户查询走不同的处理路径。 */
     @Test
@@ -106,7 +116,8 @@ class PaymentOrderIntegrationTest {
                 mvc.perform(post("/api/mall/orders/{orderNo}/payment", orderNo))
                         .andExpect(status().isOk())
                         .andExpect(jsonPath("$.paymentResponse.paymentOrderNo").value(original.paymentOrderNo()))
-                        .andExpect(jsonPath("$.paymentResponse.status").value("CREATED"));
+                        .andExpect(jsonPath("$.paymentResponse.paymentUrl").value(original.paymentUrl()))
+                        .andExpect(jsonPath("$.paymentResponse.status").value("PENDING"));
             }
             mvc.perform(get("/api/mall/orders/{orderNo}", orderNo))
                     .andExpect(status().isOk())
@@ -126,7 +137,7 @@ class PaymentOrderIntegrationTest {
         try {
             var result = mvc.perform(post("/api/mall/orders/{orderNo}/payment", normal))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.paymentResponse.status").value("CREATED"))
+                    .andExpect(jsonPath("$.paymentResponse.status").value("PENDING"))
                     .andReturn();
             String paymentNo = json.readTree(result.getResponse().getContentAsString())
                     .path("paymentResponse").path("paymentOrderNo").asText();
@@ -168,6 +179,50 @@ class PaymentOrderIntegrationTest {
         }
     }
 
+    /** 从商城拿到可操作的链接，并验证模拟渠道的成功事件与付款时间。 */
+    @Test
+    void paymentLinkCanCompleteWithOrWithoutCallback() throws Exception {
+        String orderNo = createMallOrder();
+        String silentOrder = createMallOrder();
+        try {
+            String url = launchMallPayment(orderNo);
+            String tradeNo = url.substring(url.lastIndexOf('/') + 1);
+            assertThat(channels.findByChannelTradeNo("MOCK", tradeNo))
+                    .hasValueSatisfying(order -> assertThat(order.status()).isEqualTo("PENDING"));
+            assertThat(channels.findByChannelTradeNo("OTHER", tradeNo)).isEmpty();
+            mvc.perform(get(url)).andExpect(status().isOk())
+                    .andExpect(content().string(containsString("2580 分")))
+                    .andExpect(content().string(containsString("PENDING")));
+            mvc.perform(post(url).param("sendCallback", "true")).andExpect(status().isSeeOther());
+            var paid = mockChannel.query(tradeNo).orElseThrow();
+            assertThat(paid.status()).isEqualTo("SUCCESS");
+            assertThat(paid.paidAt()).isNotNull();
+            mvc.perform(post(url).param("sendCallback", "true")).andExpect(status().isSeeOther());
+            mvc.perform(get(url)).andExpect(status().isOk()).andExpect(content().string(containsString("SUCCESS")));
+            assertThat(mockChannel.query(tradeNo)).contains(paid);
+            assertThat(events.stream(MockPaymentChannel.Callback.class).toList())
+                    .containsExactly(new MockPaymentChannel.Callback("MOCK", tradeNo, 2580, "SUCCESS", paid.paidAt()));
+
+            String silentUrl = launchMallPayment(silentOrder);
+            mvc.perform(post(silentUrl).param("sendCallback", "false")).andExpect(status().isSeeOther());
+            assertThat(events.stream(MockPaymentChannel.Callback.class).count()).isEqualTo(1);
+            assertThat(channels.findByChannelTradeNo("MOCK", tradeNo))
+                    .hasValueSatisfying(order -> assertThat(order.status()).isEqualTo("PENDING"));
+        } finally {
+            deleteMallOrder(orderNo);
+            deleteMallOrder(silentOrder);
+        }
+    }
+
+    /** 从商城接口取回渠道付款链接。 */
+    private String launchMallPayment(String orderNo) throws Exception {
+        String body = mvc.perform(post("/api/mall/orders/{orderNo}/payment", orderNo))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paymentResponse.paymentUrl").isNotEmpty())
+                .andReturn().getResponse().getContentAsString();
+        return json.readTree(body).path("paymentResponse").path("paymentUrl").asText();
+    }
+
     /** 用种子商品创建总金额固定的商城草稿订单。 */
     private String createMallOrder() throws Exception {
         String body = mvc.perform(post("/api/mall/orders")
@@ -186,6 +241,10 @@ class PaymentOrderIntegrationTest {
         jdbc.update("DELETE FROM mall_order_item WHERE order_id IN "
                 + "(SELECT id FROM mall_order WHERE merchant_order_no = ?)", orderNo);
         jdbc.update("DELETE FROM mall_order WHERE merchant_order_no = ?", orderNo);
+        jdbc.update("""
+                DELETE FROM mock_channel_trade WHERE payment_order_no IN
+                    (SELECT payment_order_no FROM payment_order WHERE merchant_code = ? AND merchant_order_no = ?)
+                """, MallPaymentGateway.MERCHANT_CODE, orderNo);
         jdbc.update("DELETE FROM payment_order WHERE merchant_code = ? AND merchant_order_no = ?",
                 MallPaymentGateway.MERCHANT_CODE, orderNo);
     }
