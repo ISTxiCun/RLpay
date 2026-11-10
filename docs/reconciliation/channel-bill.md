@@ -1,6 +1,6 @@
 # 模拟渠道账单导入与对账
 
-第 6 步记录有效导入的批次元数据，并返回逐笔报告。账单内容和差异处理记录在本阶段不单独保存，导入不会修改支付单或商城订单。
+导入记录批次、返回逐笔报告，并保存差异快照。导入不会修改支付单或商城订单。
 
 ## 文件格式
 
@@ -23,7 +23,7 @@ curl --fail-with-body http://127.0.0.1:8080/internal/reconciliation/bills \
   -F 'file=@mock.csv;type=text/csv'
 ```
 
-成功响应包含批次号、账单日、时区、UTC 窗口、每类数量与逐笔明细。内容错误返回 HTTP 400，响应中的 `line` 和 `reason` 指出位置和原因。批次参数或文件整体错误的 `line` 为空。如果文件在容器上传限制处被拒绝，会收到 HTTP 413。若指定时区历史上跳过了该日期，整个批次会被拒绝。相同文件重跑会生成新的导入批次。第 7 步再负责差异记录的幂等保存。
+成功响应包含批次号、账单日、时区、UTC 窗口、每类数量与逐笔明细。内容错误返回 HTTP 400，响应中的 `line` 和 `reason` 指出位置和原因。批次参数或文件整体错误的 `line` 为空。如果文件在容器上传限制处被拒绝，会收到 HTTP 413。若指定时区历史上跳过了该日期，整个批次会被拒绝。相同文件重跑会生成新的导入批次。差异记录按渠道、账单日、交易号和类型去重，重跑保留原证据和处理结果。
 
 | 分类 | 含义 |
 | --- | --- |
@@ -34,3 +34,10 @@ curl --fail-with-body http://127.0.0.1:8080/internal/reconciliation/bills \
 | `STATUS_MISMATCH` | 状态不一致，例如渠道成功而平台待支付 |
 
 同笔交易可同时计入金额与状态差异。反向只读取成功单，按账单时区的当天零点（含）到次日零点（不含）转换成 UTC，支持夏令时日期。对账通过支付模块的只读快照读取本地支付单。
+
+
+## 差异查询与处理
+
+- `GET /internal/reconciliation/differences?afterId=0&status=PENDING` 返回最多 100 条，状态可省略。
+- `GET /internal/reconciliation/differences/{id}` 查看原始证据与处理结果。
+- `POST /internal/reconciliation/differences/{id}/process` 复用主动查单核实。状态差异确认成功后记为 `RESOLVED`，商城通知独立投递。金额冲突、缺单或未确认保留 `PENDING`。

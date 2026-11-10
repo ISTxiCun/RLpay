@@ -3,6 +3,7 @@ package com.zrl.rlpay.reconciliation.service.impl;
 import com.zrl.rlpay.payment.service.PaymentReconciliationReader;
 import com.zrl.rlpay.reconciliation.service.BillReconciliationService;
 import com.zrl.rlpay.reconciliation.service.BillValidationException;
+import com.zrl.rlpay.reconciliation.service.ReconciliationDifferenceService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -25,6 +26,7 @@ public class BillReconciliationServiceImpl implements BillReconciliationService 
     private static final int MAX_REPORT_ROWS = 20_000;
     private final PaymentReconciliationReader payments;
     private final JdbcTemplate jdbc;
+    private final ReconciliationDifferenceService differences;
     private final BillCsvParser parser = new BillCsvParser();
 
     /** 账单先完整校验，之后比较两个方向并记录批次。 */
@@ -63,8 +65,10 @@ public class BillReconciliationServiceImpl implements BillReconciliationService 
                     (batch_id, channel_code, bill_date, bill_zone, bill_row_count, imported_at_utc)
                 VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP(3))
                 """, batchId, channelCode, billDate, zone.getId(), billRows.size());
-        return new Report(batchId, channelCode, billDate, zone.getId(), from, to, billRows.size(),
+        Report report = new Report(batchId, channelCode, billDate, zone.getId(), from, to, billRows.size(),
                 Map.copyOf(counts), List.copyOf(entries));
+        differences.record(report);
+        return report;
     }
 
     /** 校验批次标识及可落库日期，使用指定时区计算账单窗口。 */

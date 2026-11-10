@@ -3,6 +3,8 @@ package com.zrl.rlpay.reconciliation;
 import com.zrl.rlpay.reconciliation.service.BillReconciliationService;
 import com.zrl.rlpay.reconciliation.service.BillReconciliationService.Reason;
 import com.zrl.rlpay.reconciliation.service.BillValidationException;
+import com.zrl.rlpay.reconciliation.service.ReconciliationDifferenceService;
+import com.zrl.rlpay.payment.service.PaymentNotificationService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -44,6 +46,8 @@ class BillReconciliationIntegrationTest {
     @Autowired private BillReconciliationService reconciliation;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private MockMvc mvc;
+    @Autowired private ReconciliationDifferenceService differences;
+    @Autowired private PaymentNotificationService notifications;
 
     /** 核对全部差异、时区两端和渠道隔离，且不改变任何支付状态。 */
     @Test
@@ -167,6 +171,63 @@ class BillReconciliationIntegrationTest {
                 Integer.class, channel)).isZero();
     }
 
+    /** 重跑保留原证据；核实状态差异后复用支付成功和商城通知。 */
+    @Test
+    void differencesAreDurableAndSafeToResolve() {
+        String trade = "MOCK-" + UUID.randomUUID();
+        String wrong = trade + "-W";
+        String payment = "PAY-" + UUID.randomUUID();
+        String order = "MALL-" + UUID.randomUUID();
+        var date = LocalDate.parse("2040-01-02");
+        try {
+            jdbc.update("""
+                    INSERT INTO mall_order (merchant_order_no,status,total_amount_cent,version)
+                    VALUES (?, 'PAYMENT_REQUESTED', 100, 1)
+                    """, order);
+            jdbc.update("""
+                    INSERT INTO payment_order
+                    (payment_order_no,merchant_code,merchant_order_no,amount_cent,status,channel_code,channel_trade_no)
+                    VALUES (?, 'MALL_MOCK', ?, 100, 'PENDING', 'MOCK', ?)
+                    """, payment, order, trade);
+            add("MOCK", wrong, 110, "PENDING", null);
+            jdbc.update("""
+                    INSERT INTO mock_channel_trade
+                    (channel_trade_no,payment_order_no,amount_cent,status,paid_at_utc)
+                    VALUES (?, ?, 100, 'SUCCESS', '2040-01-02 00:00:00')
+                    """, trade, payment);
+            byte[] file = csv(HEADER + "MOCK," + trade + ",100,SUCCESS,2040-01-02T00:00:00Z\n"
+                    + "MOCK," + wrong + ",100,SUCCESS,2040-01-02T00:00:00Z\n");
+            var first = reconciliation.reconcile("MOCK", date, "UTC", file);
+            var repeat = reconciliation.reconcile("MOCK", date, "UTC", file);
+            assertThat(first.batchId()).isNotEqualTo(repeat.batchId());
+            long id = jdbc.queryForObject("SELECT id FROM reconciliation_difference WHERE channel_trade_no = ?",
+                    Long.class, trade);
+            long wrongId = jdbc.queryForObject("""
+                    SELECT id FROM reconciliation_difference WHERE channel_trade_no = ? AND reason='STATUS_MISMATCH'
+                    """, Long.class, wrong);
+            assertThat(differences.find(id).orElseThrow().batchId()).isEqualTo(first.batchId());
+            assertThat(differences.process(wrongId).orElseThrow().status()).isEqualTo("PENDING");
+            assertThat(jdbc.queryForObject("SELECT status FROM payment_order WHERE channel_trade_no = ?",
+                    String.class, wrong)).isEqualTo("PENDING");
+
+            var resolved = differences.process(id).orElseThrow();
+            assertThat(resolved.status()).isEqualTo("RESOLVED");
+            assertThat(resolved.paymentOrderNo()).isEqualTo(payment);
+            notifications.deliverDue();
+            assertThat(jdbc.queryForObject("SELECT status FROM mall_order WHERE merchant_order_no = ?",
+                    String.class, order)).isEqualTo("PAID");
+            reconciliation.reconcile("MOCK", date, "UTC", file);
+            assertThat(differences.process(id)).contains(resolved);
+        } finally {
+            jdbc.update("DELETE FROM reconciliation_difference WHERE channel_trade_no IN (?, ?)", trade, wrong);
+            jdbc.update("DELETE FROM reconciliation_batch WHERE channel_code='MOCK' AND bill_date=?", date);
+            jdbc.update("DELETE FROM payment_notification WHERE payment_order_no=?", payment);
+            jdbc.update("DELETE FROM mock_channel_trade WHERE payment_order_no=?", payment);
+            jdbc.update("DELETE FROM payment_order WHERE channel_trade_no IN (?, ?)", trade, wrong);
+            jdbc.update("DELETE FROM mall_order WHERE merchant_order_no=?", order);
+        }
+    }
+
     /** 通过实际 multipart 入口上传指定日期的模拟账单。 */
     private org.springframework.test.web.servlet.ResultActions upload(String content) throws Exception {
         return mvc.perform(multipart("/internal/reconciliation/bills")
@@ -193,6 +254,7 @@ class BillReconciliationIntegrationTest {
     /** 仅清理本用例使用的渠道和导入批次。 */
     @AfterEach
     void cleanup() {
+        jdbc.update("DELETE FROM reconciliation_difference WHERE channel_code = ?", channel);
         jdbc.update("DELETE FROM reconciliation_batch WHERE channel_code = ?", channel);
         jdbc.update("DELETE FROM payment_order WHERE channel_code IN (?, ?)", channel, other);
     }
