@@ -2,6 +2,8 @@ package com.zrl.rlpay.payment;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zrl.rlpay.mall.service.MallPaymentGateway;
+import com.zrl.rlpay.payment.channel.MockPaymentChannel;
+import com.zrl.rlpay.payment.job.PaymentResultJobs;
 import com.zrl.rlpay.payment.service.PaymentOrderService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,13 +25,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /** 使用真实数据库验证渠道已受理但商城收到 503 时的重试。 */
-@SpringBootTest
+@SpringBootTest(properties = "rlpay.payment.jobs-enabled=false")
 @AutoConfigureMockMvc
 class MockChannelTimeoutIntegrationTest {
     @Autowired private MockMvc mvc;
     @Autowired private ObjectMapper json;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private PaymentOrderService orders;
+    @Autowired private MockPaymentChannel channel;
+    @Autowired private PaymentResultJobs jobs;
 
     /** 正常测试时提供开关；单独验证可直接从进程环境传入。 */
     @DynamicPropertySource
@@ -88,6 +92,53 @@ class MockChannelTimeoutIntegrationTest {
             if (paymentNo != null) {
                 jdbc.update("DELETE FROM mock_channel_trade WHERE payment_order_no = ?", paymentNo);
             }
+            jdbc.update("DELETE FROM payment_order WHERE merchant_code = ? AND merchant_order_no = ?",
+                    MallPaymentGateway.MERCHANT_CODE, orderNo);
+        }
+    }
+
+    /** 关联写入前收到回调，三次投递耗尽后后台仍能恢复原交易。 */
+    @Test
+    void recoveryFindsPaidTradeAfterEarlyCallbackAttemptsExhausted() throws Exception {
+        String body = mvc.perform(post("/api/mall/orders").contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"items":[{"productCode":"MALL-NOTEBOOK","quantity":1}]}
+                                """))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        String orderNo = json.readTree(body).path("merchantOrderNo").asText();
+        try {
+            mvc.perform(post("/api/mall/orders/{orderNo}/payment", orderNo))
+                    .andExpect(status().isServiceUnavailable());
+            String paymentNo = orders.findByMerchantOrderNo(MallPaymentGateway.MERCHANT_CODE, orderNo)
+                    .orElseThrow().paymentOrderNo();
+            String tradeNo = jdbc.queryForObject("SELECT channel_trade_no FROM mock_channel_trade WHERE payment_order_no = ?",
+                    String.class, paymentNo);
+            channel.complete(tradeNo, true).orElseThrow();
+            for (int attempt = 1; attempt < 3; attempt++) {
+                jdbc.update("UPDATE mock_channel_trade SET callback_due_at_utc = UTC_TIMESTAMP(3) WHERE channel_trade_no = ?",
+                        tradeNo);
+                channel.retryDueCallbacks();
+            }
+            assertThat(jdbc.queryForObject("SELECT callback_attempts FROM mock_channel_trade WHERE channel_trade_no = ?",
+                    Integer.class, tradeNo)).isEqualTo(3);
+            assertThat(jdbc.queryForObject("SELECT callback_due_at_utc FROM mock_channel_trade WHERE channel_trade_no = ?",
+                    java.time.LocalDateTime.class, tradeNo)).isNull();
+            assertThat(orders.findByPaymentOrderNo(MallPaymentGateway.MERCHANT_CODE, paymentNo))
+                    .hasValueSatisfying(order -> assertThat(order.status()).isEqualTo("CREATED"));
+
+            jobs.reconcileDue();
+            assertThat(orders.findByPaymentOrderNo(MallPaymentGateway.MERCHANT_CODE, paymentNo))
+                    .hasValueSatisfying(order -> assertThat(order.status()).isEqualTo("SUCCESS"));
+            assertThat(jdbc.queryForObject("SELECT channel_trade_no FROM payment_order WHERE payment_order_no = ?",
+                    String.class, paymentNo)).isEqualTo(tradeNo);
+        } finally {
+            jdbc.update("DELETE FROM mall_order_item WHERE order_id IN "
+                    + "(SELECT id FROM mall_order WHERE merchant_order_no = ?)", orderNo);
+            jdbc.update("DELETE FROM mall_order WHERE merchant_order_no = ?", orderNo);
+            jdbc.update("""
+                    DELETE FROM mock_channel_trade WHERE payment_order_no IN
+                        (SELECT payment_order_no FROM payment_order WHERE merchant_code = ? AND merchant_order_no = ?)
+                    """, MallPaymentGateway.MERCHANT_CODE, orderNo);
             jdbc.update("DELETE FROM payment_order WHERE merchant_code = ? AND merchant_order_no = ?",
                     MallPaymentGateway.MERCHANT_CODE, orderNo);
         }

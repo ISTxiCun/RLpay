@@ -1,5 +1,6 @@
 package com.zrl.rlpay.payment.channel;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DuplicateKeyException;
@@ -13,12 +14,12 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.time.temporal.ChronoUnit;
 import java.util.Optional;
 import java.util.UUID;
 
 /** 模拟渠道的持久化交易、查单和成功事件。 */
 @Service
+@Slf4j
 public class MockPaymentChannel {
     public static final String CODE = "MOCK";
     public static final String PAYMENT_PATH = "/mock-payments";
@@ -68,18 +69,48 @@ public class MockPaymentChannel {
 
     /** 模拟付款成功；只在首次更新提交后按选项发出渠道成功事件。 */
     public Optional<Trade> complete(String channelTradeNo, boolean sendCallback) {
-        Instant now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
         int changed = transactions.execute(transaction -> jdbc.update("""
-                UPDATE mock_channel_trade SET status = 'SUCCESS', paid_at_utc = ?
+                UPDATE mock_channel_trade SET status = 'SUCCESS', paid_at_utc = UTC_TIMESTAMP(3),
+                    callback_due_at_utc = CASE WHEN ? THEN UTC_TIMESTAMP(3) ELSE NULL END
                 WHERE channel_trade_no = ? AND status = 'PENDING'
-                """, LocalDateTime.ofInstant(now, ZoneOffset.UTC), channelTradeNo));
+                """, sendCallback, channelTradeNo));
         Optional<Trade> trade = transactions.execute(transaction -> query(channelTradeNo));
         if (sendCallback && changed == 1) {
-            Trade result = trade.orElseThrow();
-            events.publishEvent(new Callback(CODE, result.channelTradeNo(), result.amountCent(),
-                    result.status(), result.paidAt()));
+            dispatchCallback(channelTradeNo);
         }
         return trade;
+    }
+
+    /** 重新发送到期回调，每轮最多取 50 条。 */
+    public void retryDueCallbacks() {
+        jdbc.queryForList("""
+                SELECT channel_trade_no FROM mock_channel_trade
+                WHERE callback_due_at_utc <= UTC_TIMESTAMP(3)
+                ORDER BY callback_due_at_utc, channel_trade_no LIMIT 50
+                """, String.class).forEach(this::dispatchCallback);
+    }
+
+    /** 原子预留一次发送，最多三次；发送前已持久化下一次调度时间。 */
+    private void dispatchCallback(String tradeNo) {
+        try {
+            int claimed = transactions.execute(transaction -> jdbc.update("""
+                    UPDATE mock_channel_trade
+                    SET callback_due_at_utc = CASE WHEN callback_attempts = 2 THEN NULL
+                        ELSE TIMESTAMPADD(SECOND, 5 * (1 << callback_attempts), UTC_TIMESTAMP(3)) END,
+                        callback_attempts = callback_attempts + 1
+                    WHERE channel_trade_no = ? AND callback_due_at_utc <= UTC_TIMESTAMP(3) AND callback_attempts < 3
+                    """, tradeNo));
+            if (claimed == 0) {
+                return;
+            }
+            Trade result = transactions.execute(transaction -> query(tradeNo).orElseThrow());
+            events.publishEvent(new Callback(CODE, tradeNo, result.amountCent(), result.status(), result.paidAt()));
+            transactions.executeWithoutResult(transaction -> jdbc.update("""
+                    UPDATE mock_channel_trade SET callback_due_at_utc = NULL WHERE channel_trade_no = ?
+                    """, tradeNo));
+        } catch (RuntimeException retry) {
+            log.warn("模拟渠道回调未确认，若仍有次数将重投 tradeNo={} reason={}", tradeNo, retry.getMessage());
+        }
     }
 
     /** 返回供商城浏览器打开的模拟渠道付款路径。 */
