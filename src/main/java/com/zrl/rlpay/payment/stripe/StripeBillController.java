@@ -18,7 +18,7 @@ import java.time.ZoneId;
 @RequiredArgsConstructor
 @ConditionalOnExpression("${rlpay.stripe-sandbox.enabled:false} && ${rlpay.reconciliation.import-enabled:false}")
 public class StripeBillController {
-    private final StripeSandboxClient stripe;
+    private final StripeBillExporter bills;
 
     /** 按账单日和时区生成可直接导入的 Stripe 测试支付账单。 */
     @GetMapping(value = "/internal/reconciliation/stripe-test/bill", produces = "text/csv;charset=UTF-8")
@@ -31,7 +31,7 @@ public class StripeBillController {
             if (!from.isBefore(to) || billDate.getYear() < 2000 || billDate.getYear() > 9998) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Stripe 账单日期无效");
             }
-            return stripe.downloadBill(from, to);
+            return bills.downloadBill(from, to);
         } catch (DateTimeException invalid) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Stripe 账单日期或时区无效");
         }

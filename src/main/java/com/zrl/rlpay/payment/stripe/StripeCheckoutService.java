@@ -2,6 +2,8 @@ package com.zrl.rlpay.payment.stripe;
 
 /** Stripe 测试模式的发起与已验签回调处理。 */
 public interface StripeCheckoutService {
+    String CHANNEL_CODE = "STRIPE_TEST";
+
     /** 为认证商户的已保存支付单创建或复用 Checkout。 */
     Launch start(String merchantCode, String paymentNo);
 

@@ -9,7 +9,6 @@ import org.springframework.web.client.RestClient;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
@@ -25,14 +24,17 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 /** 用官方接口形状的 HTTP 替身验证 Checkout、查单和账单。 */
-class StripeSandboxClientTest {
+class StripeSandboxComponentsTest {
     private static final String SESSION = "cs_test_" + "a".repeat(58);
     private static final String SECRET = "whsec_local_fixture";
     private static final Instant PAID = Instant.parse("2026-11-11T00:30:00Z");
     private final RestClient.Builder builder = RestClient.builder().baseUrl("https://api.stripe.com");
     private final MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
-    private final StripeSandboxClient stripe = new StripeSandboxClient(builder.build(), new ObjectMapper(), SECRET,
-            URI.create("https://example.invalid/success"), URI.create("https://example.invalid/cancel"),
+    private final RestClient api = builder.build();
+    private final StripeCheckoutClient checkout = new StripeCheckoutClient(api,
+            "https://example.invalid/success", "https://example.invalid/cancel");
+    private final StripeBillExporter bills = new StripeBillExporter(api);
+    private final StripeWebhookVerifier webhook = new StripeWebhookVerifier(new ObjectMapper(), SECRET,
             Clock.fixed(PAID, ZoneOffset.UTC));
 
     /** 创建请求使用稳定幂等键，查询成功采用渠道交易时间。 */
@@ -44,8 +46,8 @@ class StripeSandboxClientTest {
         server.expect(request -> assertThat(request.getURI().getPath()).endsWith(SESSION))
                 .andExpect(request -> assertThat(request.getURI().getQuery()).contains("expand[]=payment_intent.latest_charge"))
                 .andRespond(withSuccess(session(true), MediaType.APPLICATION_JSON));
-        assertThat(stripe.create("PAY-TEST", 1290).tradeNo()).isEqualTo(SESSION);
-        var result = stripe.queryResult(SESSION).orElseThrow();
+        assertThat(checkout.create("PAY-TEST", 1290).tradeNo()).isEqualTo(SESSION);
+        var result = checkout.queryResult(SESSION).orElseThrow();
         assertThat(result.paidAt()).isEqualTo(PAID);
         assertThat(result.amountCent()).isEqualTo(1290);
         assertThat(result.status()).isEqualTo("SUCCESS");
@@ -67,7 +69,7 @@ class StripeSandboxClientTest {
                 .andExpect(queryParam("payment_intent", "pi_test"))
                 .andRespond(withSuccess("{\"has_more\":false,\"data\":["
                         + session(true).replace(expandedIntent(), "\"pi_test\"") + "]}", MediaType.APPLICATION_JSON));
-        assertThat(stripe.downloadBill(PAID.minusSeconds(1), PAID.plusSeconds(1)))
+        assertThat(bills.downloadBill(PAID.minusSeconds(1), PAID.plusSeconds(1)))
                 .contains("STRIPE_TEST," + SESSION + ",1290,SUCCESS,2026-11-11T00:30:00Z");
         server.verify();
     }
@@ -79,13 +81,13 @@ class StripeSandboxClientTest {
                 {"livemode":false,"type":"checkout.session.completed","data":{"object":{"id":"%s"}}}
                 """.formatted(SESSION);
         byte[] body = payload.getBytes(StandardCharsets.UTF_8);
-        assertThat(stripe.authenticateCompletion(body, signed(PAID, body))).contains(SESSION);
-        assertThatThrownBy(() -> stripe.authenticateCompletion(body, signed(PAID.minusSeconds(301), body)))
+        assertThat(webhook.authenticateCompletion(body, signed(PAID, body))).contains(SESSION);
+        assertThatThrownBy(() -> webhook.authenticateCompletion(body, signed(PAID.minusSeconds(301), body)))
                 .isInstanceOf(IllegalArgumentException.class);
         byte[] live = payload.replace("false", "true").getBytes(StandardCharsets.UTF_8);
-        assertThatThrownBy(() -> stripe.authenticateCompletion(live, signed(PAID, body)))
+        assertThatThrownBy(() -> webhook.authenticateCompletion(live, signed(PAID, body)))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> stripe.authenticateCompletion(live, signed(PAID, live)))
+        assertThatThrownBy(() -> webhook.authenticateCompletion(live, signed(PAID, live)))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

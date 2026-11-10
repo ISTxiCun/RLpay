@@ -20,7 +20,7 @@ import java.io.IOException;
 @RequiredArgsConstructor
 @ConditionalOnProperty(name = "rlpay.stripe-sandbox.enabled", havingValue = "true")
 public class StripeSandboxController {
-    private final StripeSandboxClient stripe;
+    private final StripeWebhookVerifier webhookVerifier;
     private final StripeCheckoutService checkout;
     private final ObjectProvider<MerchantAuthentication> authentication;
 
@@ -51,7 +51,7 @@ public class StripeSandboxController {
         }
         java.util.Optional<String> event;
         try {
-            event = stripe.authenticateCompletion(body, request.getHeader("Stripe-Signature"));
+            event = webhookVerifier.authenticateCompletion(body, request.getHeader("Stripe-Signature"));
         } catch (IllegalArgumentException invalid) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Stripe Webhook 验签或格式错误");
         }

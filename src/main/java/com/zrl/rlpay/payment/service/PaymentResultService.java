@@ -1,17 +1,9 @@
 package com.zrl.rlpay.payment.service;
 
 import com.zrl.rlpay.payment.channel.ChannelResultProvider;
-import com.zrl.rlpay.payment.channel.MockPaymentChannel;
 
-/** 处理可信模拟渠道回调，并提供平台内部主动查单。 */
+/** 处理已规范化的渠道结果，并提供平台内部主动查单。 */
 public interface PaymentResultService {
-    /** 接收进程内的模拟渠道结果。 */
-    default Outcome acceptCallback(MockPaymentChannel.Callback callback) {
-        return callback == null ? Outcome.REJECTED : acceptResult(new ChannelResultProvider.Result(
-                callback.channelCode(), callback.channelTradeNo(), callback.amountCent(),
-                callback.status(), callback.paidAt()));
-    }
-
     /** 接收渠道适配器已经验证并规范化的结果。 */
     Outcome acceptResult(ChannelResultProvider.Result result);
 

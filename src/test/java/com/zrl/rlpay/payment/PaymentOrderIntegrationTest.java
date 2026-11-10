@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zrl.rlpay.mall.service.MallOrderService;
 import com.zrl.rlpay.mall.service.MallPaymentGateway;
 import com.zrl.rlpay.payment.channel.MockPaymentChannel;
+import com.zrl.rlpay.payment.channel.ChannelResultProvider;
 import com.zrl.rlpay.payment.job.PaymentResultJobs;
 import com.zrl.rlpay.payment.service.PaymentResultService;
 import com.zrl.rlpay.payment.service.PaymentAmountConflictException;
@@ -235,20 +236,20 @@ class PaymentOrderIntegrationTest {
             String tradeNo = url.substring(url.lastIndexOf('/') + 1);
             String paymentNo = mallOrders.getOrder(orderNo).paymentOrderNo();
             var actual = mockChannel.complete(tradeNo, false).orElseThrow();
-            assertThat(results.acceptCallback(new MockPaymentChannel.Callback(
+            assertThat(results.acceptResult(new ChannelResultProvider.Result(
                     "MOCK", tradeNo, actual.amountCent() + 1, "SUCCESS", actual.paidAt())))
                     .isEqualTo(PaymentResultService.Outcome.REJECTED);
             assertThat(payments.findByPaymentOrderNo(MallPaymentGateway.MERCHANT_CODE, paymentNo))
                     .hasValueSatisfying(order -> assertThat(order.status()).isEqualTo("PENDING"));
 
-            var success = new MockPaymentChannel.Callback("MOCK", tradeNo, actual.amountCent(),
+            var success = new ChannelResultProvider.Result("MOCK", tradeNo, actual.amountCent(),
                     "SUCCESS", actual.paidAt());
             var pool = Executors.newFixedThreadPool(2);
             var start = new CountDownLatch(1);
             try {
                 var callback = pool.submit(() -> {
                     start.await();
-                    return results.acceptCallback(success);
+                    return results.acceptResult(success);
                 });
                 var query = pool.submit(() -> {
                     start.await();
@@ -260,10 +261,10 @@ class PaymentOrderIntegrationTest {
             } finally {
                 pool.shutdownNow();
             }
-            assertThat(results.acceptCallback(new MockPaymentChannel.Callback(
+            assertThat(results.acceptResult(new ChannelResultProvider.Result(
                     "MOCK", tradeNo, actual.amountCent(), "SUCCESS", actual.paidAt().plusSeconds(1))))
                     .isEqualTo(PaymentResultService.Outcome.SUCCESS);
-            assertThat(results.acceptCallback(new MockPaymentChannel.Callback(
+            assertThat(results.acceptResult(new ChannelResultProvider.Result(
                     "MOCK", tradeNo, actual.amountCent(), "PENDING", null)))
                     .isEqualTo(PaymentResultService.Outcome.SUCCESS);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM payment_notification WHERE payment_order_no = ?",

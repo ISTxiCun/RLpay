@@ -54,7 +54,7 @@ class StripeCheckoutIntegrationTest {
     @Autowired private StripeCheckoutService checkout;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private MockMvc mvc;
-    @MockitoSpyBean private StripeSandboxClient stripe;
+    @MockitoSpyBean private StripeCheckoutClient stripe;
 
     /** 首次超时保留原平台单，回调提前到达时重试，绑定后两次确认保持幂等。 */
     @Test
@@ -65,7 +65,7 @@ class StripeCheckoutIntegrationTest {
         String tradeNo = "cs_test_" + "b".repeat(58);
         try {
             doThrow(new ResourceAccessException("fixture timeout"))
-                    .doReturn(new StripeSandboxClient.Checkout(tradeNo, "https://checkout.stripe.com/c/pay/demo"))
+                    .doReturn(new StripeCheckoutClient.Checkout(tradeNo, "https://checkout.stripe.com/c/pay/demo"))
                     .when(stripe).create(paymentNo, 1290);
             assertThatThrownBy(() -> checkout.start(merchant, paymentNo))
                     .isInstanceOf(ResponseStatusException.class).hasMessageContaining("503");
@@ -73,7 +73,7 @@ class StripeCheckoutIntegrationTest {
             assertThat(checkout.start(merchant, paymentNo).status()).isEqualTo("PENDING");
             assertThat(checkout.start(merchant, paymentNo).paymentUrl()).endsWith("/demo");
             verify(stripe, times(2)).create(paymentNo, 1290);
-            doReturn(Optional.of(new ChannelResultProvider.Result(StripeSandboxClient.CODE, tradeNo,
+            doReturn(Optional.of(new ChannelResultProvider.Result(StripeCheckoutService.CHANNEL_CODE, tradeNo,
                     1290, "SUCCESS", Instant.parse("2026-11-11T00:30:00Z")))).when(stripe).queryResult(tradeNo);
             assertThat(checkout.confirm(tradeNo)).isTrue();
             assertThat(checkout.confirm(tradeNo)).isTrue();
@@ -96,9 +96,9 @@ class StripeCheckoutIntegrationTest {
         String orderPath = "/api/merchant/payments/" + paymentNo;
         String webhook = "/api/payment/webhooks/stripe-test";
         try {
-            doReturn(new StripeSandboxClient.Checkout(tradeNo, "https://checkout.stripe.com/c/pay/demo"))
+            doReturn(new StripeCheckoutClient.Checkout(tradeNo, "https://checkout.stripe.com/c/pay/demo"))
                     .when(stripe).create(paymentNo, 1290);
-            doReturn(Optional.of(new ChannelResultProvider.Result(StripeSandboxClient.CODE, tradeNo,
+            doReturn(Optional.of(new ChannelResultProvider.Result(StripeCheckoutService.CHANNEL_CODE, tradeNo,
                     1290, "SUCCESS", Instant.now()))).when(stripe).queryResult(tradeNo);
             mvc.perform(merchantRequest(post(orderPath + "/stripe-checkout"), "POST", orderPath + "/stripe-checkout"))
                     .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PENDING"));
@@ -131,7 +131,7 @@ class StripeCheckoutIntegrationTest {
         String trade = "cs_test_" + "d".repeat(58);
         try {
             doThrow(new ResourceAccessException("accepted before response was lost"))
-                    .doReturn(new StripeSandboxClient.Checkout(trade, "https://checkout.stripe.com/c/pay/demo"))
+                    .doReturn(new StripeCheckoutClient.Checkout(trade, "https://checkout.stripe.com/c/pay/demo"))
                     .when(stripe).create(payment, 1290);
             assertThatThrownBy(() -> checkout.start(merchant, payment)).isInstanceOf(ResponseStatusException.class);
             assertThat(checkout.confirm(trade)).isFalse();
@@ -145,7 +145,7 @@ class StripeCheckoutIntegrationTest {
             assertThat(orders.findByPaymentOrderNo(merchant, payment).orElseThrow().status()).isEqualTo("PENDING");
             assertThat(jdbc.queryForObject("SELECT channel_trade_no FROM payment_order WHERE payment_order_no = ?",
                     String.class, payment)).isEqualTo(trade);
-            doReturn(Optional.of(new ChannelResultProvider.Result(StripeSandboxClient.CODE, trade,
+            doReturn(Optional.of(new ChannelResultProvider.Result(StripeCheckoutService.CHANNEL_CODE, trade,
                     1290, "SUCCESS", Instant.now()))).when(stripe).queryResult(trade);
             assertThat(checkout.confirm(trade)).isTrue();
 

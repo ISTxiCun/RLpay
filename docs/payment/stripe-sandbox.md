@@ -7,7 +7,7 @@
 准备独立 MySQL 测试库，按[项目的测试库说明](../mall/mall-api-design.md#本地运行与初始化)配置数据库。用 Java 17 执行：
 
 ```bash
-mvn -Dtest=StripeSandboxClientTest,StripeCheckoutIntegrationTest test
+mvn -Dtest=StripeSandboxComponentsTest,StripeCheckoutIntegrationTest test
 ```
 
 这两组测试共 6 项，通过时应看到 0 failures、0 errors。HTTP 替身验证发起请求、签名验签、查单解析和支付账单映射；MySQL 测试验证超时后复用平台单、提前回调可重试，以及支付成功只推进一次。端到端测试还验证了商户 HTTP 发起、无效与有效的 Webhook 签名、以及查询到 SUCCESS。这些测试不连接 Stripe。
