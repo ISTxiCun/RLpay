@@ -272,6 +272,31 @@ class PaymentOrderIntegrationTest {
         }
     }
 
+    /** 待支付单的退避在数据库保存，新一轮不会立即重复查单。 */
+    @Test
+    void pendingLookupKeepsItsPersistedBackoff() throws Exception {
+        String orderNo = createMallOrder();
+        try {
+            String url = launchMallPayment(orderNo);
+            String paymentNo = mallOrders.getOrder(orderNo).paymentOrderNo();
+            var worker = new PaymentResultJobs(jdbc, mockChannel, channels, results);
+            worker.reconcileDue();
+            assertThat(jdbc.queryForObject("SELECT result_checks FROM payment_order WHERE payment_order_no = ?",
+                    Integer.class, paymentNo)).isEqualTo(1);
+            mvc.perform(post(url).param("sendCallback", "false")).andExpect(status().isSeeOther());
+            worker.reconcileDue();
+            assertThat(payments.findByPaymentOrderNo(MallPaymentGateway.MERCHANT_CODE, paymentNo))
+                    .hasValueSatisfying(order -> assertThat(order.status()).isEqualTo("PENDING"));
+            jdbc.update("UPDATE payment_order SET next_check_at_utc = UTC_TIMESTAMP(3) WHERE payment_order_no = ?",
+                    paymentNo);
+            worker.reconcileDue();
+            assertThat(payments.findByPaymentOrderNo(MallPaymentGateway.MERCHANT_CODE, paymentNo))
+                    .hasValueSatisfying(order -> assertThat(order.status()).isEqualTo("SUCCESS"));
+        } finally {
+            deleteMallOrder(orderNo);
+        }
+    }
+
     /** 第 4 步写入平台成功状态后，再发起只返回当前结果。 */
     @Test
     void successfulPlatformOrderReturnsStatusWithoutPaymentLink() throws Exception {

@@ -14,7 +14,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.time.temporal.ChronoUnit;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -70,12 +69,11 @@ public class MockPaymentChannel {
 
     /** 模拟付款成功；只在首次更新提交后按选项发出渠道成功事件。 */
     public Optional<Trade> complete(String channelTradeNo, boolean sendCallback) {
-        Instant now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
-        LocalDateTime paidAt = LocalDateTime.ofInstant(now, ZoneOffset.UTC);
         int changed = transactions.execute(transaction -> jdbc.update("""
-                UPDATE mock_channel_trade SET status = 'SUCCESS', paid_at_utc = ?, callback_due_at_utc = ?
+                UPDATE mock_channel_trade SET status = 'SUCCESS', paid_at_utc = UTC_TIMESTAMP(3),
+                    callback_due_at_utc = CASE WHEN ? THEN UTC_TIMESTAMP(3) ELSE NULL END
                 WHERE channel_trade_no = ? AND status = 'PENDING'
-                """, paidAt, sendCallback ? paidAt : null, channelTradeNo));
+                """, sendCallback, channelTradeNo));
         Optional<Trade> trade = transactions.execute(transaction -> query(channelTradeNo));
         if (sendCallback && changed == 1) {
             dispatchCallback(channelTradeNo);
