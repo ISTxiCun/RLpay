@@ -139,6 +139,34 @@ public class MallOrderServiceImpl implements MallOrderService {
         }
     }
 
+    /** 锁定订单后校验通知，支付单号和已支付状态一同写入。 */
+    @Override
+    @Transactional
+    public void confirmPayment(PaymentConfirmation confirmation) {
+        if (confirmation == null || !MallPaymentGateway.MERCHANT_CODE.equals(confirmation.merchantCode())
+                || confirmation.merchantOrderNo() == null || confirmation.merchantOrderNo().isBlank()
+                || confirmation.paymentOrderNo() == null || confirmation.paymentOrderNo().isBlank()
+                || confirmation.paymentOrderNo().length() > 64 || confirmation.amountCent() <= 0) {
+            throw new IllegalArgumentException("无效的商城支付成功通知");
+        }
+        MallOrder order = findOrder(confirmation.merchantOrderNo(), true);
+        if (!order.getMerchantOrderNo().equals(confirmation.merchantOrderNo())
+                || order.getTotalAmountCent() != confirmation.amountCent()
+                || (order.getPaymentOrderNo() != null
+                    && !order.getPaymentOrderNo().equals(confirmation.paymentOrderNo()))) {
+            throw new IllegalStateException("支付成功通知与商城订单不匹配");
+        }
+        if (order.getStatus() == MallOrderStatus.PAID && order.getPaymentOrderNo() != null) {
+            return;
+        }
+        if (order.getStatus() != MallOrderStatus.PAYMENT_REQUESTED) {
+            throw new IllegalStateException("商城订单当前状态不接受支付成功通知");
+        }
+        order.setPaymentOrderNo(confirmation.paymentOrderNo());
+        order.setStatus(MallOrderStatus.PAID);
+        updateOrderRow(order);
+    }
+
     /** 按商户订单号查单。写操作用行锁串行处理同一订单。 */
     private MallOrder findOrder(String merchantOrderNo, boolean forUpdate) {
         var query = Wrappers.lambdaQuery(MallOrder.class)
