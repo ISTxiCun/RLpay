@@ -2,6 +2,7 @@ package com.zrl.rlpay.reconciliation;
 
 import com.zrl.rlpay.reconciliation.service.BillReconciliationService;
 import com.zrl.rlpay.reconciliation.service.BillReconciliationService.Reason;
+import com.zrl.rlpay.reconciliation.service.BillValidationException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,6 +23,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -126,6 +128,43 @@ class BillReconciliationIntegrationTest {
         upload("\uFEFF" + HEADER + valid.replace("repeat", "\"repeat\"")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.billRowCount").value(1))
                 .andExpect(jsonPath("$.counts.CHANNEL_ONLY").value(1));
+    }
+
+    /** 跳过的民用日期无有效窗口；正常日期的空账单仍可识别平台缺单。 */
+    @Test
+    void emptyBillStillReconcilesButSkippedDateIsRejected() {
+        assertThatThrownBy(() -> reconciliation.reconcile(channel, LocalDate.parse("2011-12-30"),
+                "Pacific/Apia", csv(HEADER))).isInstanceOf(BillValidationException.class)
+                .hasMessageContaining("不存在该账单日");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM reconciliation_batch WHERE channel_code = ?",
+                Integer.class, channel)).isZero();
+        add(channel, "reverse", 100, "SUCCESS", "2040-01-02T00:00:00");
+        var report = reconciliation.reconcile(channel, LocalDate.parse("2040-01-02"), "Asia/Shanghai", csv(HEADER));
+        assertThat(report.billRowCount()).isZero();
+        assertThat(report.counts()).containsEntry(Reason.PLATFORM_ONLY, 1L);
+    }
+
+    /** 容器即使接受更大 multipart，应用也在读取内容之前拒绝。 */
+    @Test
+    void oversizedUploadDoesNotReadFileBytes() throws Exception {
+        var file = new MockMultipartFile("file", "mock.csv", "text/csv", csv(HEADER)) {
+            /** 模拟容器接收了超出应用限制的上传。 */
+            @Override
+            public long getSize() {
+                return BillReconciliationService.MAX_FILE_BYTES + 1L;
+            }
+
+            /** 超大文件不应被读取。 */
+            @Override
+            public byte[] getBytes() {
+                throw new AssertionError("超大文件被读取");
+            }
+        };
+        mvc.perform(multipart("/internal/reconciliation/bills").file(file)
+                        .param("channelCode", channel).param("billDate", "2040-01-02").param("billZone", "Asia/Shanghai"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.reason").value("CSV 必须非空且不超过 1 MiB"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM reconciliation_batch WHERE channel_code = ?",
+                Integer.class, channel)).isZero();
     }
 
     /** 通过实际 multipart 入口上传指定日期的模拟账单。 */

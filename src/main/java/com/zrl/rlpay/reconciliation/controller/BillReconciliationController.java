@@ -28,6 +28,9 @@ public class BillReconciliationController {
     public BillReconciliationService.Report upload(@RequestParam String channelCode,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate billDate,
             @RequestParam String billZone, @RequestParam MultipartFile file) throws IOException {
+        if (file.isEmpty() || file.getSize() > BillReconciliationService.MAX_FILE_BYTES) {
+            throw new BillValidationException(null, "CSV 必须非空且不超过 1 MiB");
+        }
         return reconciliation.reconcile(channelCode, billDate, billZone, file.getBytes());
     }
 

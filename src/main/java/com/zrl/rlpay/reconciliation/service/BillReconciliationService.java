@@ -1,7 +1,5 @@
 package com.zrl.rlpay.reconciliation.service;
 
-import com.zrl.rlpay.payment.service.PaymentReconciliationReader;
-
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
@@ -9,6 +7,8 @@ import java.util.Map;
 
 /** 导入一份渠道账单并返回逐笔对账报告。 */
 public interface BillReconciliationService {
+    int MAX_FILE_BYTES = 1024 * 1024;
+
     /** 校验文件、生成报告并记录有效导入批次。 */
     Report reconcile(String channelCode, LocalDate billDate, String billZone, byte[] csv);
 
@@ -20,8 +20,12 @@ public interface BillReconciliationService {
     record BillEntry(int line, String channelTradeNo, long amountCent, String status, Instant paidAt) {
     }
 
+    /** 报告中使用的平台订单快照。 */
+    record PlatformEntry(String channelTradeNo, String paymentOrderNo, long amountCent, String status, Instant paidAt) {
+    }
+
     /** 两侧交易快照与本笔所有差异。缺单时对应侧为空。 */
-    record Entry(String channelTradeNo, BillEntry bill, PaymentReconciliationReader.Snapshot platform,
+    record Entry(String channelTradeNo, BillEntry bill, PlatformEntry platform,
                  List<Reason> reasons) {
     }
 

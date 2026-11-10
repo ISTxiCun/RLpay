@@ -34,6 +34,9 @@ public class BillReconciliationServiceImpl implements BillReconciliationService 
         ZoneId zone = validateMetadata(channelCode, billDate, billZone);
         var from = billDate.atStartOfDay(zone).toInstant();
         var to = billDate.plusDays(1).atStartOfDay(zone).toInstant();
+        if (!from.isBefore(to)) {
+            throw new BillValidationException(null, "指定时区中不存在该账单日");
+        }
         var billRows = parser.parse(csv, channelCode, from, to);
 
         var platformRows = payments.findByTradeNos(channelCode, billRows.keySet());
@@ -43,12 +46,14 @@ public class BillReconciliationServiceImpl implements BillReconciliationService 
             counts.put(reason, 0L);
         }
         billRows.values().forEach(bill -> {
-            var platform = platformRows.get(bill.channelTradeNo());
+            var snapshot = platformRows.get(bill.channelTradeNo());
+            var platform = snapshot == null ? null : toEntry(snapshot);
             append(entries, counts, new Entry(bill.channelTradeNo(), bill, platform, compare(bill, platform)));
         });
         payments.forEachSuccess(channelCode, from, to, platform -> {
             if (!billRows.containsKey(platform.channelTradeNo())) {
-                append(entries, counts, new Entry(platform.channelTradeNo(), null, platform, List.of(Reason.PLATFORM_ONLY)));
+                append(entries, counts, new Entry(platform.channelTradeNo(), null, toEntry(platform),
+                        List.of(Reason.PLATFORM_ONLY)));
             }
         });
 
@@ -80,8 +85,14 @@ public class BillReconciliationServiceImpl implements BillReconciliationService 
         throw new BillValidationException(null, "账单时区无效");
     }
 
+    /** 将支付模块快照转换成稳定的对账报告字段。 */
+    private static PlatformEntry toEntry(PaymentReconciliationReader.Snapshot snapshot) {
+        return new PlatformEntry(snapshot.channelTradeNo(), snapshot.paymentOrderNo(), snapshot.amountCent(),
+                snapshot.status(), snapshot.paidAt());
+    }
+
     /** 比较同一笔账单的金额和状态，保留同时存在的差异。 */
-    private static List<Reason> compare(BillEntry bill, PaymentReconciliationReader.Snapshot platform) {
+    private static List<Reason> compare(BillEntry bill, PlatformEntry platform) {
         if (platform == null) {
             return List.of(Reason.CHANNEL_ONLY);
         }

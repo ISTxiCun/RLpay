@@ -1,5 +1,6 @@
 package com.zrl.rlpay.reconciliation.service.impl;
 
+import com.zrl.rlpay.reconciliation.service.BillReconciliationService;
 import com.zrl.rlpay.reconciliation.service.BillReconciliationService.BillEntry;
 import com.zrl.rlpay.reconciliation.service.BillValidationException;
 
@@ -15,7 +16,6 @@ import java.util.regex.Pattern;
 
 /** 解析本项目的固定五列账单格式，错误定位到物理行。 */
 final class BillCsvParser {
-    private static final int MAX_BYTES = 1024 * 1024;
     private static final int MAX_ROWS = 10_000;
     static final Pattern CHANNEL_CODE = Pattern.compile("[A-Za-z0-9_-]{1,32}");
     private static final Pattern TRADE_NO = Pattern.compile("[A-Za-z0-9._-]{1,64}");
@@ -25,7 +25,7 @@ final class BillCsvParser {
 
     /** 解析并校验所有行；同一渠道批次内的交易号必须唯一。 */
     Map<String, BillEntry> parse(byte[] csv, String channel, Instant from, Instant to) {
-        if (csv == null || csv.length == 0 || csv.length > MAX_BYTES) {
+        if (csv == null || csv.length == 0 || csv.length > BillReconciliationService.MAX_FILE_BYTES) {
             throw new BillValidationException(null, "CSV 必须非空且不超过 1 MiB");
         }
         String contents = new String(csv, StandardCharsets.UTF_8);
