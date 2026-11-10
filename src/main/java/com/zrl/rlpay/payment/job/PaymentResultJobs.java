@@ -7,6 +7,7 @@ import com.zrl.rlpay.payment.service.PaymentResultService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -18,6 +19,8 @@ public class PaymentResultJobs {
     private final JdbcTemplate jdbc;
     private final List<ChannelLaunchRecovery> recovery;
     private final PaymentResultService results;
+    @Value("${rlpay.payment.result-round-budget-ms:10000}")
+    private long roundBudgetMs = 10000;
 
     /** 每轮从数据库取到期记录，重启后可继续。 */
     @Scheduled(fixedDelayString = "${rlpay.payment.result-job-delay-ms:5000}")
@@ -29,11 +32,11 @@ public class PaymentResultJobs {
                 log.warn("渠道恢复任务未完成", failure);
             }
         }
-        reconcilePending();
+        reconcilePending(System.nanoTime());
     }
 
     /** 只补查已绑定的支付单，具体渠道表由各渠道的恢复组件维护。 */
-    private void reconcilePending() {
+    private void reconcilePending(long startedAt) {
         var due = jdbc.query("""
                 SELECT id, payment_order_no FROM payment_order
                 WHERE status = 'PENDING' AND channel_code IS NOT NULL AND channel_trade_no IS NOT NULL
@@ -41,6 +44,10 @@ public class PaymentResultJobs {
                 ORDER BY next_check_at_utc, id LIMIT 50
                 """, (row, index) -> new Candidate(row.getLong(1), row.getString(2)));
         for (var item : due) {
+            if (java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
+                    >= Math.max(1, roundBudgetMs)) {
+                return;
+            }
             try {
                 if (jdbc.update("""
                         UPDATE payment_order

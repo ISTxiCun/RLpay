@@ -5,6 +5,7 @@ import com.zrl.rlpay.mall.service.MallOrderService;
 import com.zrl.rlpay.mall.service.MallPaymentGateway;
 import com.zrl.rlpay.payment.channel.MockPaymentChannel;
 import com.zrl.rlpay.payment.service.PaymentNotificationService;
+import com.zrl.rlpay.payment.service.impl.PaymentNotificationServiceImpl;
 import com.zrl.rlpay.payment.service.PaymentOrderService;
 import com.zrl.rlpay.payment.service.PaymentResultService;
 import org.junit.jupiter.api.Test;
@@ -64,6 +65,35 @@ class PaymentNotificationIntegrationTest {
                     Integer.class, paymentNo)).isEqualTo(1);
         } finally {
             cleanup(orderNo);
+        }
+    }
+
+    /** 两个投递工作实例同时扫描时，商城只收到一次有效更新。 */
+    @Test
+    void multipleWorkersKeepNotificationIdempotent() throws Exception {
+        String order = createMallOrder();
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var response = gateway.createOrGet(mall.freezeForPayment(order));
+            channel.complete(tradeNo(response), true);
+            var before = mall.getOrder(order).version();
+            var start = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.Callable<Void> deliver = () -> {
+                start.await();
+                new PaymentNotificationServiceImpl(jdbc, mall).deliverDue();
+                return null;
+            };
+            var first = pool.submit(deliver);
+            var second = pool.submit(deliver);
+            start.countDown();
+            first.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            second.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(notificationStatus(response.paymentOrderNo())).isEqualTo("DELIVERED");
+            assertThat(attempts(response.paymentOrderNo())).isEqualTo(1);
+            assertThat(mall.getOrder(order).version()).isEqualTo(before + 1);
+        } finally {
+            pool.shutdownNow();
+            cleanup(order);
         }
     }
 
