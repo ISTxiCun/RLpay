@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zrl.rlpay.mall.service.MallOrderService;
 import com.zrl.rlpay.mall.service.MallPaymentGateway;
 import com.zrl.rlpay.payment.channel.MockPaymentChannel;
+import com.zrl.rlpay.payment.job.PaymentResultJobs;
+import com.zrl.rlpay.payment.service.PaymentResultService;
 import com.zrl.rlpay.payment.service.PaymentAmountConflictException;
 import com.zrl.rlpay.payment.service.PaymentChannelService;
 import com.zrl.rlpay.payment.service.PaymentOrderService;
@@ -37,7 +39,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /** 使用 MySQL 和真实 Spring Bean 验证唯一约束、商户范围和商城交接。 */
-@SpringBootTest
+@SpringBootTest(properties = "rlpay.payment.jobs-enabled=false")
 @AutoConfigureMockMvc
 @RecordApplicationEvents
 class PaymentOrderIntegrationTest {
@@ -50,6 +52,7 @@ class PaymentOrderIntegrationTest {
     @Autowired private MockPaymentChannel mockChannel;
     @Autowired private PaymentChannelService channels;
     @Autowired private ApplicationEvents events;
+    @Autowired private PaymentResultService results;
 
     /** 并发请求复用同一原单，金额冲突与跨商户查询走不同的处理路径。 */
     @Test
@@ -208,10 +211,64 @@ class PaymentOrderIntegrationTest {
             mvc.perform(post(silentUrl).param("sendCallback", "false")).andExpect(status().isSeeOther());
             assertThat(events.stream(MockPaymentChannel.Callback.class).count()).isEqualTo(1);
             assertThat(channels.findByChannelTradeNo("MOCK", tradeNo))
+                    .hasValueSatisfying(order -> assertThat(order.status()).isEqualTo("SUCCESS"));
+            String silentTradeNo = silentUrl.substring(silentUrl.lastIndexOf('/') + 1);
+            assertThat(channels.findByChannelTradeNo("MOCK", silentTradeNo))
                     .hasValueSatisfying(order -> assertThat(order.status()).isEqualTo("PENDING"));
+            new PaymentResultJobs(jdbc, mockChannel, channels, results).reconcileDue();
+            assertThat(channels.findByChannelTradeNo("MOCK", silentTradeNo))
+                    .hasValueSatisfying(order -> assertThat(order.status()).isEqualTo("SUCCESS"));
         } finally {
             deleteMallOrder(orderNo);
             deleteMallOrder(silentOrder);
+        }
+    }
+
+    /** 金额异常不推进状态，并发回调与查单保留第一次渠道支付时间。 */
+    @Test
+    void callbackAndQueryAreIdempotentAndValidateAmount() throws Exception {
+        String orderNo = createMallOrder();
+        try {
+            String url = launchMallPayment(orderNo);
+            String tradeNo = url.substring(url.lastIndexOf('/') + 1);
+            String paymentNo = mallOrders.getOrder(orderNo).paymentOrderNo();
+            var actual = mockChannel.complete(tradeNo, false).orElseThrow();
+            assertThat(results.acceptCallback(new MockPaymentChannel.Callback(
+                    "MOCK", tradeNo, actual.amountCent() + 1, "SUCCESS", actual.paidAt())))
+                    .isEqualTo(PaymentResultService.Outcome.REJECTED);
+            assertThat(payments.findByPaymentOrderNo(MallPaymentGateway.MERCHANT_CODE, paymentNo))
+                    .hasValueSatisfying(order -> assertThat(order.status()).isEqualTo("PENDING"));
+
+            var success = new MockPaymentChannel.Callback("MOCK", tradeNo, actual.amountCent(),
+                    "SUCCESS", actual.paidAt());
+            var pool = Executors.newFixedThreadPool(2);
+            var start = new CountDownLatch(1);
+            try {
+                var callback = pool.submit(() -> {
+                    start.await();
+                    return results.acceptCallback(success);
+                });
+                var query = pool.submit(() -> {
+                    start.await();
+                    return results.query(paymentNo);
+                });
+                start.countDown();
+                assertThat(callback.get(10, TimeUnit.SECONDS)).isEqualTo(PaymentResultService.Outcome.SUCCESS);
+                assertThat(query.get(10, TimeUnit.SECONDS)).isEqualTo(PaymentResultService.Outcome.SUCCESS);
+            } finally {
+                pool.shutdownNow();
+            }
+            assertThat(results.acceptCallback(new MockPaymentChannel.Callback(
+                    "MOCK", tradeNo, actual.amountCent(), "SUCCESS", actual.paidAt().plusSeconds(1))))
+                    .isEqualTo(PaymentResultService.Outcome.SUCCESS);
+            assertThat(results.acceptCallback(new MockPaymentChannel.Callback(
+                    "MOCK", tradeNo, actual.amountCent(), "PENDING", null)))
+                    .isEqualTo(PaymentResultService.Outcome.SUCCESS);
+            assertThat(jdbc.queryForObject("SELECT paid_at_utc FROM payment_order WHERE payment_order_no = ?",
+                    java.time.LocalDateTime.class, paymentNo))
+                    .isEqualTo(java.time.LocalDateTime.ofInstant(actual.paidAt(), java.time.ZoneOffset.UTC));
+        } finally {
+            deleteMallOrder(orderNo);
         }
     }
 
