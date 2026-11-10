@@ -48,8 +48,8 @@ public class StripeCheckoutServiceImpl implements StripeCheckoutService {
     public Launch start(String merchantCode, String paymentNo) {
         var order = orders.findByPaymentOrderNo(merchantCode, paymentNo)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
-        if ("SUCCESS".equals(order.status())) {
-            return new Launch(paymentNo, "SUCCESS", null);
+        if ("SUCCESS".equals(order.status()) || "EXPIRED".equals(order.status())) {
+            return new Launch(paymentNo, order.status(), null);
         }
         if ("PENDING".equals(order.status())) {
             return pending(paymentNo, merchantCode);
@@ -95,7 +95,11 @@ public class StripeCheckoutServiceImpl implements StripeCheckoutService {
     @Override
     public boolean confirm(String channelTradeNo) {
         return channels.findByChannelTradeNo(StripeCheckoutService.CHANNEL_CODE, channelTradeNo)
-                .map(order -> results.query(order.paymentOrderNo()) == PaymentResultService.Outcome.SUCCESS)
+                .map(order -> {
+                    var outcome = results.query(order.paymentOrderNo());
+                    return outcome == PaymentResultService.Outcome.SUCCESS
+                            || outcome == PaymentResultService.Outcome.EXPIRED;
+                })
                 .orElse(false);
     }
 
@@ -107,7 +111,7 @@ public class StripeCheckoutServiceImpl implements StripeCheckoutService {
                 WHERE p.payment_order_no = ? AND p.merchant_code = ?
                 """, (row, index) -> new Launch(paymentNo, row.getString(1), row.getString(2)), paymentNo, merchantCode);
         var launch = launches.stream().findFirst().orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
-        if ("SUCCESS".equals(launch.status())) {
+        if ("SUCCESS".equals(launch.status()) || "EXPIRED".equals(launch.status())) {
             return new Launch(paymentNo, launch.status(), null);
         }
         if (!"PENDING".equals(launch.status()) || launch.paymentUrl() == null) {
