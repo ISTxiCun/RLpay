@@ -5,6 +5,7 @@ import com.zrl.rlpay.payment.channel.MockPaymentChannel;
 import com.zrl.rlpay.payment.entity.PaymentOrder;
 import com.zrl.rlpay.payment.mapper.PaymentOrderMapper;
 import com.zrl.rlpay.payment.service.PaymentChannelService;
+import com.zrl.rlpay.payment.service.PaymentChannelBinding;
 import com.zrl.rlpay.payment.service.PaymentOrderService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -19,6 +20,7 @@ import java.util.Optional;
 public class PaymentChannelServiceImpl implements PaymentChannelService {
     private final PaymentOrderMapper mapper;
     private final MockPaymentChannel channel;
+    private final PaymentChannelBinding binding;
 
     /** 在支付事务外发起渠道请求，受理后只允许 CREATED 单绑定一次。 */
     @Override
@@ -30,21 +32,9 @@ public class PaymentChannelServiceImpl implements PaymentChannelService {
         }
 
         var accepted = channel.start(saved.getPaymentOrderNo(), saved.getAmountCent());
-        mapper.update(null, Wrappers.lambdaUpdate(PaymentOrder.class)
-                .eq(PaymentOrder::getPaymentOrderNo, saved.getPaymentOrderNo())
-                .eq(PaymentOrder::getStatus, "CREATED")
-                .isNull(PaymentOrder::getChannelCode)
-                .isNull(PaymentOrder::getChannelTradeNo)
-                .set(PaymentOrder::getChannelCode, MockPaymentChannel.CODE)
-                .set(PaymentOrder::getChannelTradeNo, accepted.channelTradeNo())
-                .set(PaymentOrder::getStatus, "PENDING"));
-
-        PaymentOrder current = read(saved.getPaymentOrderNo());
-        if (!MockPaymentChannel.CODE.equals(current.getChannelCode())
-                || !accepted.channelTradeNo().equals(current.getChannelTradeNo())) {
-            throw new IllegalStateException("平台支付单的渠道交易关联不一致");
-        }
-        return response(current);
+        String status = binding.bind(saved.getMerchantCode(), saved.getPaymentOrderNo(),
+                MockPaymentChannel.CODE, accepted.channelTradeNo());
+        return new LaunchResult(status, "PENDING".equals(status) ? accepted.paymentUrl() : null);
     }
 
     /** 供后续回调及对账按渠道和交易号定位平台支付单。 */

@@ -8,6 +8,7 @@ import com.zrl.rlpay.payment.job.PaymentResultJobs;
 import com.zrl.rlpay.payment.service.PaymentResultService;
 import com.zrl.rlpay.payment.service.PaymentAmountConflictException;
 import com.zrl.rlpay.payment.service.PaymentChannelService;
+import com.zrl.rlpay.payment.service.PaymentChannelBinding;
 import com.zrl.rlpay.payment.service.PaymentOrderService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -51,6 +52,7 @@ class PaymentOrderIntegrationTest {
     @Autowired private ObjectMapper json;
     @Autowired private MockPaymentChannel mockChannel;
     @Autowired private PaymentChannelService channels;
+    @Autowired private PaymentChannelBinding binding;
     @Autowired private ApplicationEvents events;
     @Autowired private PaymentResultService results;
 
@@ -215,7 +217,7 @@ class PaymentOrderIntegrationTest {
             String silentTradeNo = silentUrl.substring(silentUrl.lastIndexOf('/') + 1);
             assertThat(channels.findByChannelTradeNo("MOCK", silentTradeNo))
                     .hasValueSatisfying(order -> assertThat(order.status()).isEqualTo("PENDING"));
-            new PaymentResultJobs(jdbc, mockChannel, channels, results).reconcileDue();
+            new PaymentResultJobs(jdbc, java.util.List.of(), results).reconcileDue();
             assertThat(channels.findByChannelTradeNo("MOCK", silentTradeNo))
                     .hasValueSatisfying(order -> assertThat(order.status()).isEqualTo("SUCCESS"));
         } finally {
@@ -281,7 +283,7 @@ class PaymentOrderIntegrationTest {
         try {
             String url = launchMallPayment(orderNo);
             String paymentNo = mallOrders.getOrder(orderNo).paymentOrderNo();
-            var worker = new PaymentResultJobs(jdbc, mockChannel, channels, results);
+            var worker = new PaymentResultJobs(jdbc, java.util.List.of(), results);
             worker.reconcileDue();
             assertThat(jdbc.queryForObject("SELECT result_checks FROM payment_order WHERE payment_order_no = ?",
                     Integer.class, paymentNo)).isEqualTo(1);
@@ -296,6 +298,36 @@ class PaymentOrderIntegrationTest {
                     .hasValueSatisfying(order -> assertThat(order.status()).isEqualTo("SUCCESS"));
         } finally {
             deleteMallOrder(orderNo);
+        }
+    }
+
+    /** 并发绑定同一交易可复用，另一渠道或平台单不能覆盖已有绑定。 */
+    @Test
+    void channelBindingIsIdempotentAndRejectsConflicts() throws Exception {
+        String merchant = "IT-BIND";
+        String first = payments.createOrGet(merchant, UUID.randomUUID().toString(), 100).paymentOrderNo();
+        String second = payments.createOrGet(merchant, UUID.randomUUID().toString(), 100).paymentOrderNo();
+        String trade = UUID.randomUUID().toString();
+        var pool = Executors.newFixedThreadPool(2);
+        try {
+            var start = new CountDownLatch(1);
+            java.util.concurrent.Callable<String> attempt = () -> {
+                start.await();
+                return binding.bind(merchant, first, "MOCK", trade);
+            };
+            var a = pool.submit(attempt);
+            var b = pool.submit(attempt);
+            start.countDown();
+            assertThat(a.get(10, TimeUnit.SECONDS)).isEqualTo("PENDING");
+            assertThat(b.get(10, TimeUnit.SECONDS)).isEqualTo("PENDING");
+            assertThatThrownBy(() -> binding.bind(merchant, first, "STRIPE_TEST", trade))
+                    .isInstanceOf(PaymentChannelBinding.Conflict.class);
+            assertThatThrownBy(() -> binding.bind(merchant, second, "MOCK", trade))
+                    .isInstanceOf(PaymentChannelBinding.Conflict.class);
+            assertThat(payments.findByPaymentOrderNo(merchant, second).orElseThrow().status()).isEqualTo("CREATED");
+        } finally {
+            pool.shutdownNow();
+            jdbc.update("DELETE FROM payment_order WHERE payment_order_no IN (?, ?)", first, second);
         }
     }
 

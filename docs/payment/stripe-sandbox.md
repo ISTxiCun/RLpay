@@ -10,7 +10,7 @@
 mvn -Dtest=StripeSandboxClientTest,StripeCheckoutIntegrationTest test
 ```
 
-这两组测试共 5 项，通过时应看到 0 failures、0 errors。HTTP 替身验证发起请求、签名验签、查单解析和支付账单映射；MySQL 测试验证超时后复用平台单、提前回调可重试，以及支付成功只推进一次。端到端测试还验证了商户 HTTP 发起、无效与有效的 Webhook 签名、以及查询到 SUCCESS。这些测试不连接 Stripe。
+这两组测试共 6 项，通过时应看到 0 failures、0 errors。HTTP 替身验证发起请求、签名验签、查单解析和支付账单映射；MySQL 测试验证超时后复用平台单、提前回调可重试，以及支付成功只推进一次。端到端测试还验证了商户 HTTP 发起、无效与有效的 Webhook 签名、以及查询到 SUCCESS。这些测试不连接 Stripe。
 
 ## 用真实 Stripe 测试模式手动验收
 
@@ -55,7 +55,7 @@ python docs/payment/stripe-smoke.py start PAY-替换为同一个单号
 python docs/payment/stripe-smoke.py query PAY-替换为同一个单号
 ```
 
-预期 `SUCCESS`。若再发起，预期仍返回原平台单号与 `SUCCESS`，`paymentUrl` 为空。重复发起可验证复用；已受理但应答丢失的故障注入由本地自动测试覆盖。
+预期 `SUCCESS`。若再发起，预期仍返回原平台单号与 `SUCCESS`，`paymentUrl` 为空。重复发起可验证复用。已受理但应答丢失由本地自动测试注入。后台从已提交的发起记录恢复关联，调用同一幂等键，超过 23 小时停止自动重试并保留记录供人工核实。
 
 ### 3. 验证主动查单和账单
 

@@ -28,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -118,6 +119,44 @@ class StripeCheckoutIntegrationTest {
             jdbc.update("DELETE FROM stripe_checkout_attempt WHERE payment_order_no = ?", paymentNo);
             jdbc.update("DELETE FROM payment_order WHERE payment_order_no = ?", paymentNo);
             jdbc.update("DELETE FROM merchant_request_nonce WHERE credential_id = ?", "stripe-smoke");
+        }
+    }
+
+    /** 新工作进程从数据库重领发起记录；过期记录不再次调用 Stripe。 */
+    @Test
+    void recoveryReplaysOnlyWithinPersistedWindow() {
+        String merchant = "IT-STRIPE";
+        String payment = orders.createOrGet(merchant, UUID.randomUUID().toString(), 1290).paymentOrderNo();
+        String expired = orders.createOrGet(merchant, UUID.randomUUID().toString(), 1290).paymentOrderNo();
+        String trade = "cs_test_" + "d".repeat(58);
+        try {
+            doThrow(new ResourceAccessException("accepted before response was lost"))
+                    .doReturn(new StripeSandboxClient.Checkout(trade, "https://checkout.stripe.com/c/pay/demo"))
+                    .when(stripe).create(payment, 1290);
+            assertThatThrownBy(() -> checkout.start(merchant, payment)).isInstanceOf(ResponseStatusException.class);
+            assertThat(checkout.confirm(trade)).isFalse();
+            jdbc.update("UPDATE stripe_checkout_attempt SET next_recovery_at_utc = UTC_TIMESTAMP(3) WHERE payment_order_no = ?", payment);
+            jdbc.update("""
+                    INSERT INTO stripe_checkout_attempt (payment_order_no, requested_at_utc)
+                    VALUES (?, UTC_TIMESTAMP(3) - INTERVAL 24 HOUR)
+                    """, expired);
+
+            new StripeCheckoutRecovery(jdbc, checkout).recoverDue();
+            assertThat(orders.findByPaymentOrderNo(merchant, payment).orElseThrow().status()).isEqualTo("PENDING");
+            assertThat(jdbc.queryForObject("SELECT channel_trade_no FROM payment_order WHERE payment_order_no = ?",
+                    String.class, payment)).isEqualTo(trade);
+            doReturn(Optional.of(new ChannelResultProvider.Result(StripeSandboxClient.CODE, trade,
+                    1290, "SUCCESS", Instant.now()))).when(stripe).queryResult(trade);
+            assertThat(checkout.confirm(trade)).isTrue();
+
+            new StripeCheckoutRecovery(jdbc, checkout).recoverDue();
+            assertThatThrownBy(() -> checkout.start(merchant, expired)).isInstanceOf(ResponseStatusException.class)
+                    .hasMessageContaining("幂等窗口已过");
+            verify(stripe, times(2)).create(payment, 1290);
+            verify(stripe, never()).create(expired, 1290);
+        } finally {
+            jdbc.update("DELETE FROM stripe_checkout_attempt WHERE payment_order_no IN (?, ?)", payment, expired);
+            jdbc.update("DELETE FROM payment_order WHERE payment_order_no IN (?, ?)", payment, expired);
         }
     }
 
