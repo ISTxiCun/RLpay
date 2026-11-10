@@ -58,21 +58,24 @@ public class StripeCheckoutServiceImpl implements StripeCheckoutService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "平台订单状态或 USD 金额不支持 Stripe 测试发起");
         }
         jdbc.update("""
-                INSERT INTO stripe_checkout_attempt (payment_order_no, requested_at_utc, next_recovery_at_utc)
-                VALUES (?, UTC_TIMESTAMP(3), TIMESTAMPADD(SECOND, 30, UTC_TIMESTAMP(3)))
+                INSERT INTO stripe_checkout_attempt (payment_order_no, requested_at_utc, next_recovery_at_utc, request_form)
+                VALUES (?, UTC_TIMESTAMP(3), TIMESTAMPADD(SECOND, 30, UTC_TIMESTAMP(3)), ?)
                 ON DUPLICATE KEY UPDATE payment_order_no = stripe_checkout_attempt.payment_order_no
-                """, paymentNo);
-        Boolean insideWindow = jdbc.queryForObject("""
-                SELECT requested_at_utc > UTC_TIMESTAMP(3) - INTERVAL 23 HOUR
+                """, paymentNo, stripe.requestForm(paymentNo, order.amountCent()));
+        var attempt = jdbc.queryForObject("""
+                SELECT requested_at_utc > UTC_TIMESTAMP(3) - INTERVAL 23 HOUR, request_form
                 FROM stripe_checkout_attempt WHERE payment_order_no = ?
-                """, Boolean.class, paymentNo);
-        if (!Boolean.TRUE.equals(insideWindow)) {
+                """, (row, index) -> new Attempt(row.getBoolean(1), row.getString(2)), paymentNo);
+        if (attempt == null || !attempt.insideWindow()) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "发起幂等窗口已过，需核实渠道后再处理");
         }
 
+        if (attempt.form() == null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "历史发起缺少原请求参数，需人工核实");
+        }
         StripeCheckoutClient.Checkout checkout;
         try {
-            checkout = stripe.create(paymentNo, order.amountCent());
+            checkout = stripe.create(paymentNo, order.amountCent(), attempt.form());
         } catch (org.springframework.web.client.RestClientException failure) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Stripe 测试渠道暂未确认受理");
         }
@@ -111,5 +114,7 @@ public class StripeCheckoutServiceImpl implements StripeCheckoutService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "平台支付单没有 Stripe 付款链接");
         }
         return launch;
+    }
+    private record Attempt(boolean insideWindow, String form) {
     }
 }

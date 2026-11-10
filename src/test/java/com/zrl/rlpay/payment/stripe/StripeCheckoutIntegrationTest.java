@@ -26,6 +26,8 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.never;
@@ -66,13 +68,13 @@ class StripeCheckoutIntegrationTest {
         try {
             doThrow(new ResourceAccessException("fixture timeout"))
                     .doReturn(new StripeCheckoutClient.Checkout(tradeNo, "https://checkout.stripe.com/c/pay/demo"))
-                    .when(stripe).create(paymentNo, 1290);
+                    .when(stripe).create(eq(paymentNo), eq(1290L), anyString());
             assertThatThrownBy(() -> checkout.start(merchant, paymentNo))
                     .isInstanceOf(ResponseStatusException.class).hasMessageContaining("503");
             assertThat(checkout.confirm(tradeNo)).isFalse();
             assertThat(checkout.start(merchant, paymentNo).status()).isEqualTo("PENDING");
             assertThat(checkout.start(merchant, paymentNo).paymentUrl()).endsWith("/demo");
-            verify(stripe, times(2)).create(paymentNo, 1290);
+            verify(stripe, times(2)).create(eq(paymentNo), eq(1290L), anyString());
             doReturn(Optional.of(new ChannelResultProvider.Result(StripeCheckoutService.CHANNEL_CODE, tradeNo,
                     1290, "SUCCESS", Instant.parse("2026-11-11T00:30:00Z")))).when(stripe).queryResult(tradeNo);
             assertThat(checkout.confirm(tradeNo)).isTrue();
@@ -97,7 +99,7 @@ class StripeCheckoutIntegrationTest {
         String webhook = "/api/payment/webhooks/stripe-test";
         try {
             doReturn(new StripeCheckoutClient.Checkout(tradeNo, "https://checkout.stripe.com/c/pay/demo"))
-                    .when(stripe).create(paymentNo, 1290);
+                    .when(stripe).create(eq(paymentNo), eq(1290L), anyString());
             doReturn(Optional.of(new ChannelResultProvider.Result(StripeCheckoutService.CHANNEL_CODE, tradeNo,
                     1290, "SUCCESS", Instant.now()))).when(stripe).queryResult(tradeNo);
             mvc.perform(merchantRequest(post(orderPath + "/stripe-checkout"), "POST", orderPath + "/stripe-checkout"))
@@ -132,8 +134,11 @@ class StripeCheckoutIntegrationTest {
         try {
             doThrow(new ResourceAccessException("accepted before response was lost"))
                     .doReturn(new StripeCheckoutClient.Checkout(trade, "https://checkout.stripe.com/c/pay/demo"))
-                    .when(stripe).create(payment, 1290);
+                    .when(stripe).create(eq(payment), eq(1290L), anyString());
             assertThatThrownBy(() -> checkout.start(merchant, payment)).isInstanceOf(ResponseStatusException.class);
+            String original = jdbc.queryForObject("SELECT request_form FROM stripe_checkout_attempt WHERE payment_order_no=?",
+                    String.class, payment);
+            doReturn("changed-return-urls").when(stripe).requestForm(payment, 1290);
             assertThat(checkout.confirm(trade)).isFalse();
             jdbc.update("UPDATE stripe_checkout_attempt SET next_recovery_at_utc = UTC_TIMESTAMP(3) WHERE payment_order_no = ?", payment);
             jdbc.update("""
@@ -152,11 +157,28 @@ class StripeCheckoutIntegrationTest {
             new StripeCheckoutRecovery(jdbc, checkout).recoverDue();
             assertThatThrownBy(() -> checkout.start(merchant, expired)).isInstanceOf(ResponseStatusException.class)
                     .hasMessageContaining("幂等窗口已过");
-            verify(stripe, times(2)).create(payment, 1290);
-            verify(stripe, never()).create(expired, 1290);
+            verify(stripe, times(2)).create(payment, 1290, original);
+            verify(stripe, never()).create(eq(expired), eq(1290L), anyString());
         } finally {
             jdbc.update("DELETE FROM stripe_checkout_attempt WHERE payment_order_no IN (?, ?)", payment, expired);
             jdbc.update("DELETE FROM payment_order WHERE payment_order_no IN (?, ?)", payment, expired);
+        }
+    }
+
+    /** 没有参数快照的存量请求不会被覆盖或发送。 */
+    @Test
+    void legacyRequestWithoutSnapshotRequiresManualReview() {
+        String merchant = "IT-STRIPE";
+        String payment = orders.createOrGet(merchant, UUID.randomUUID().toString(), 1290).paymentOrderNo();
+        try {
+            jdbc.update("INSERT INTO stripe_checkout_attempt (payment_order_no,requested_at_utc) VALUES (?,UTC_TIMESTAMP(3))", payment);
+            new StripeCheckoutRecovery(jdbc, checkout).recoverDue();
+            assertThatThrownBy(() -> checkout.start(merchant, payment)).isInstanceOf(ResponseStatusException.class)
+                    .hasMessageContaining("历史发起缺少原请求参数");
+            verify(stripe, never()).create(eq(payment), eq(1290L), anyString());
+        } finally {
+            jdbc.update("DELETE FROM stripe_checkout_attempt WHERE payment_order_no = ?", payment);
+            jdbc.update("DELETE FROM payment_order WHERE payment_order_no = ?", payment);
         }
     }
 

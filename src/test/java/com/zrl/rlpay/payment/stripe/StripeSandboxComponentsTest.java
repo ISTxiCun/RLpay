@@ -51,7 +51,7 @@ class StripeSandboxComponentsTest {
         server.expect(request -> assertThat(request.getURI().getPath()).endsWith(SESSION))
                 .andExpect(request -> assertThat(request.getURI().getQuery()).contains("expand[]=payment_intent.latest_charge"))
                 .andRespond(withSuccess(session(true), MediaType.APPLICATION_JSON));
-        assertThat(checkout.create("PAY-TEST", 1290).tradeNo()).isEqualTo(SESSION);
+        assertThat(checkout.create("PAY-TEST", 1290, checkout.requestForm("PAY-TEST", 1290)).tradeNo()).isEqualTo(SESSION);
         var result = checkout.queryResult(SESSION).orElseThrow();
         assertThat(result.paidAt()).isEqualTo(PAID);
         assertThat(result.amountCent()).isEqualTo(1290);

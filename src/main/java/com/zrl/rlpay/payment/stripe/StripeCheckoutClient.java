@@ -7,7 +7,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
-import org.springframework.util.LinkedMultiValueMap;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.stream.Collectors;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
@@ -39,20 +42,31 @@ public class StripeCheckoutClient implements ChannelResultProvider {
         this.cancelUrl = https(URI.create(cancelUrl));
     }
 
-    /** 创建仅支持 USD 卡支付的测试 Checkout Session。 */
-    public Checkout create(String paymentNo, long amountCent) {
-        var form = new LinkedMultiValueMap<String, String>();
-        form.add("mode", "payment");
-        form.add("success_url", successUrl.toString());
-        form.add("cancel_url", cancelUrl.toString());
-        form.add("payment_method_types[0]", "card");
-        form.add("client_reference_id", paymentNo);
-        form.add("metadata[rlpay_order]", paymentNo);
-        form.add("payment_intent_data[metadata][rlpay_order]", paymentNo);
-        form.add("line_items[0][quantity]", "1");
-        form.add("line_items[0][price_data][currency]", CURRENCY);
-        form.add("line_items[0][price_data][unit_amount]", Long.toString(amountCent));
-        form.add("line_items[0][price_data][product_data][name]", "RLpay sandbox order");
+    /** 生成首次发起用的完整表单，供平台持久化后原样重发。 */
+    public String requestForm(String paymentNo, long amountCent) {
+        var form = new LinkedHashMap<String, String>();
+        form.put("mode", "payment");
+        form.put("success_url", successUrl.toString());
+        form.put("cancel_url", cancelUrl.toString());
+        form.put("payment_method_types[0]", "card");
+        form.put("client_reference_id", paymentNo);
+        form.put("metadata[rlpay_order]", paymentNo);
+        form.put("payment_intent_data[metadata][rlpay_order]", paymentNo);
+        form.put("line_items[0][quantity]", "1");
+        form.put("line_items[0][price_data][currency]", CURRENCY);
+        form.put("line_items[0][price_data][unit_amount]", Long.toString(amountCent));
+        form.put("line_items[0][price_data][product_data][name]", "RLpay sandbox order");
+        return form.entrySet().stream().map(field -> encode(field.getKey()) + "=" + encode(field.getValue()))
+                .collect(Collectors.joining("&"));
+    }
+
+    /** 将 UTF-8 表单字段转义一次，后续恢复直接复用结果。 */
+    private static String encode(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    /** 用原始表单和稳定幂等键创建 Stripe Checkout Session。 */
+    public Checkout create(String paymentNo, long amountCent, String form) {
         JsonNode response = api.post().uri("/v1/checkout/sessions")
                 .header("Idempotency-Key", "rlpay-checkout-" + paymentNo)
                 .contentType(MediaType.APPLICATION_FORM_URLENCODED).body(form).retrieve().body(JsonNode.class);
