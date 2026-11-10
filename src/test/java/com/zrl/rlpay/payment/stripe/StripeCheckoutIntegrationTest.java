@@ -5,6 +5,15 @@ import com.zrl.rlpay.payment.service.PaymentOrderService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.web.client.ResourceAccessException;
@@ -20,6 +29,10 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /** 用 MySQL 和 Stripe 替身验证超时后的关联恢复及平台成功迁移。 */
 @SpringBootTest(properties = {
@@ -27,12 +40,19 @@ import static org.mockito.Mockito.verify;
         "RLPAY_STRIPE_TEST_SECRET_KEY=sk_test_fixture_not_a_real_key",
         "RLPAY_STRIPE_WEBHOOK_SECRET=whsec_fixture_not_a_real_key",
         "rlpay.stripe-sandbox.success-url=https://example.invalid/success",
-        "rlpay.stripe-sandbox.cancel-url=https://example.invalid/cancel"
+        "rlpay.stripe-sandbox.cancel-url=https://example.invalid/cancel",
+        "rlpay.merchant-api.enabled=true",
+        "rlpay.merchant-api.credentials[0].id=stripe-smoke",
+        "rlpay.merchant-api.credentials[0].merchant-code=IT-STRIPE",
+        "rlpay.merchant-api.credentials[0].secret=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "rlpay.merchant-api.credentials[0].enabled=true"
 })
+@AutoConfigureMockMvc
 class StripeCheckoutIntegrationTest {
     @Autowired private PaymentOrderService orders;
     @Autowired private StripeCheckoutService checkout;
     @Autowired private JdbcTemplate jdbc;
+    @Autowired private MockMvc mvc;
     @MockitoSpyBean private StripeSandboxClient stripe;
 
     /** 首次超时保留原平台单，回调提前到达时重试，绑定后两次确认保持幂等。 */
@@ -64,5 +84,58 @@ class StripeCheckoutIntegrationTest {
             jdbc.update("DELETE FROM stripe_checkout_attempt WHERE payment_order_no = ?", paymentNo);
             jdbc.update("DELETE FROM payment_order WHERE payment_order_no = ?", paymentNo);
         }
+    }
+
+    /** 验证真实 HTTP 路由、两套验签和 MySQL 状态写入，只有 Stripe 网络被替换。 */
+    @Test
+    void signedHttpCheckoutAndWebhookReachSuccess() throws Exception {
+        var order = orders.createOrGet("IT-STRIPE", UUID.randomUUID().toString(), 1290);
+        String paymentNo = order.paymentOrderNo();
+        String tradeNo = "cs_test_" + "c".repeat(58);
+        String orderPath = "/api/merchant/payments/" + paymentNo;
+        String webhook = "/api/payment/webhooks/stripe-test";
+        try {
+            doReturn(new StripeSandboxClient.Checkout(tradeNo, "https://checkout.stripe.com/c/pay/demo"))
+                    .when(stripe).create(paymentNo, 1290);
+            doReturn(Optional.of(new ChannelResultProvider.Result(StripeSandboxClient.CODE, tradeNo,
+                    1290, "SUCCESS", Instant.now()))).when(stripe).queryResult(tradeNo);
+            mvc.perform(merchantRequest(post(orderPath + "/stripe-checkout"), "POST", orderPath + "/stripe-checkout"))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PENDING"));
+            String body = """
+                    {"livemode":false,"type":"checkout.session.completed","data":{"object":{"id":"%s"}}}
+                    """.formatted(tradeNo);
+            String time = Long.toString(Instant.now().getEpochSecond());
+            mvc.perform(post(webhook).content(body).header("Stripe-Signature", "t=" + time + ",v1=" + "0".repeat(64)))
+                    .andExpect(status().isBadRequest());
+            mvc.perform(merchantRequest(get(orderPath), "GET", orderPath))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("PENDING"));
+            String signature = sign("whsec_fixture_not_a_real_key".getBytes(StandardCharsets.UTF_8), time + "." + body);
+            mvc.perform(post(webhook).content(body).header("Stripe-Signature", "t=" + time + ",v1=" + signature))
+                    .andExpect(status().isNoContent());
+            mvc.perform(merchantRequest(get(orderPath), "GET", orderPath))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("SUCCESS"));
+        } finally {
+            jdbc.update("DELETE FROM stripe_checkout_attempt WHERE payment_order_no = ?", paymentNo);
+            jdbc.update("DELETE FROM payment_order WHERE payment_order_no = ?", paymentNo);
+            jdbc.update("DELETE FROM merchant_request_nonce WHERE credential_id = ?", "stripe-smoke");
+        }
+    }
+
+    /** 生成签名后的空请求体商户请求。 */
+    private static MockHttpServletRequestBuilder merchantRequest(MockHttpServletRequestBuilder request,
+            String method, String path) throws Exception {
+        String time = Long.toString(Instant.now().getEpochSecond());
+        String nonce = UUID.randomUUID().toString();
+        String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(new byte[0]));
+        String canonical = String.join("\n", method, path, "stripe-smoke", time, nonce, hash);
+        return request.header("X-Key-Id", "stripe-smoke").header("X-Timestamp", time)
+                .header("X-Nonce", nonce).header("X-Signature", sign(new byte[32], canonical));
+    }
+
+    /** 对规范串或 Webhook 原始内容签名。 */
+    private static String sign(byte[] key, String message) throws Exception {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(key, "HmacSHA256"));
+        return HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8)));
     }
 }
