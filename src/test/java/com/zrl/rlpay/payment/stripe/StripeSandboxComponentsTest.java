@@ -83,8 +83,8 @@ class StripeSandboxComponentsTest {
         server.expect(request -> assertThat(request.getURI().getPath()).endsWith(SESSION))
                 .andRespond(withSuccess(session(false), MediaType.APPLICATION_JSON));
         server.expect(request -> assertThat(request.getURI().getPath()).endsWith(SESSION))
-                .andRespond(withSuccess(session(false).replace(""livemode":false",
-                        ""livemode":false,"status":"expired""), MediaType.APPLICATION_JSON));
+                .andRespond(withSuccess("{\"status\":\"expired\"," + session(false).substring(1),
+                        MediaType.APPLICATION_JSON));
         assertThat(checkout.queryResult(SESSION).orElseThrow().status()).isEqualTo("PENDING");
         assertThat(checkout.queryResult(SESSION).orElseThrow().status()).isEqualTo("EXPIRED");
         server.verify();
