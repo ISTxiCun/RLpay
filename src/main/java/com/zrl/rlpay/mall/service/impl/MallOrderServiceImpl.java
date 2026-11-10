@@ -35,7 +35,6 @@ import java.util.stream.Collectors;
 @Service
 @RequiredArgsConstructor
 public class MallOrderServiceImpl implements MallOrderService {
-    private static final String MERCHANT_CODE = "MALL_MOCK";
 
     private final MallProductMapper productMapper;
     private final MallOrderMapper orderMapper;
@@ -124,7 +123,7 @@ public class MallOrderServiceImpl implements MallOrderService {
             }
             default -> throw new ResponseStatusException(HttpStatus.CONFLICT, "当前订单状态不可发起支付");
         }
-        return new MallPaymentGateway.Request(MERCHANT_CODE, order.getMerchantOrderNo(), order.getTotalAmountCent());
+        return new MallPaymentGateway.Request(MallPaymentGateway.MERCHANT_CODE, order.getMerchantOrderNo(), order.getTotalAmountCent());
     }
 
     /** 在支付后的事务中写回支付单号。并发重试时校验单号一致。 */

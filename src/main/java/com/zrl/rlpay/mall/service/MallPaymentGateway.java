@@ -2,6 +2,8 @@ package com.zrl.rlpay.mall.service;
 
 /** 商城侧的支付调用契约，供后续接入支付模块。 */
 public interface MallPaymentGateway {
+    String MERCHANT_CODE = "MALL_MOCK";
+
     /** 根据商户订单号创建或获取支付单。 */
     Response createOrGet(Request request);
 
