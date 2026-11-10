@@ -9,6 +9,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -79,10 +80,13 @@ public class PaymentOrderService {
         return Optional.ofNullable(order).map(PaymentOrderService::toView);
     }
 
-    /** 在写入或查库前拒绝空标识和超长标识，保持标识原样比较。 */
+    /** 在进入数据库前校验标识，避免驱动替换非法字符后命中其他标识。 */
     private static void requireIdentifier(String value, int maxLength, String label) {
         if (value == null || value.isBlank() || value.codePointCount(0, value.length()) > maxLength) {
             throw new IllegalArgumentException(label + "不能为空且长度不能超过 " + maxLength);
+        }
+        if (!StandardCharsets.UTF_8.newEncoder().canEncode(value)) {
+            throw new IllegalArgumentException(label + "含有无效字符");
         }
     }
 
