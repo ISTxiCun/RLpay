@@ -1,0 +1,9 @@
+spring:
+  application:
+    name: RLpay
+  profiles:
+    default: test
+  datasource:
+    url: ${RLPAY_DB_URL}
+    username: ${RLPAY_DB_USERNAME}
+    password: ${RLPAY_DB_PASSWORD}
