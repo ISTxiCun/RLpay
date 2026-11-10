@@ -11,7 +11,7 @@ public interface MallPaymentGateway {
     record Request(String merchantCode, String merchantOrderNo, long amountCent) {
     }
 
-    /** 商城接收的支付单号和支付单状态。 */
-    record Response(String paymentOrderNo, String status) {
+    /** 商城接收的平台支付单号、状态和可用的付款链接。 */
+    record Response(String paymentOrderNo, String status, String paymentUrl) {
     }
 }

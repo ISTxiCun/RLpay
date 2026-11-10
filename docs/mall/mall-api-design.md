@@ -12,11 +12,13 @@ flowchart TB
         direction LR
         api["商城 HTTP API<br/>查商品、创建 / 查询 / 修改 / 取消订单、发起支付"]
         mall["mall 模块<br/>计算订单金额、维护订单状态"]
-        payment["payment 模块<br/>按商户和商户订单号创建或复用支付单"]
+        payment["payment 模块<br/>创建或复用支付单，关联渠道交易"]
+        channel["模拟渠道<br/>创建交易、返回付款链接"]
 
         api --> mall
         mall -->|"进程内 Java 调用：商户号、商户订单号、金额（分）"| payment
-        payment -->|"返回支付单号和支付单状态"| mall
+        payment -->|"发起支付"| channel
+        payment -->|"返回支付单号、状态和付款链接"| mall
     end
 
     subgraph database["MySQL · rl_pay"]
@@ -36,10 +38,10 @@ flowchart TB
 
 在 PowerShell 中为当前进程设置 JDBC 地址和数据库凭据。首次使用时先创建 `rl_pay` 数据库。
 
-应用启动时，Flyway 执行支付表迁移 `V1__create_payment_order.sql`。根据数据库现状选择启动方式。
+应用启动时，Flyway 执行支付表和模拟渠道迁移。根据数据库现状选择启动方式。
 
 - 空库直接运行下方命令，启动后执行商城初始化脚本。
-- 如果已有商城表但没有 Flyway 历史表，先确认目标是本项目数据库，在运行下方命令前设置 `$env:SPRING_FLYWAY_BASELINE_ON_MIGRATE = 'true'`。Flyway 从版本 0 建立基线并执行 V1。确认迁移成功后，回到设置该变量的 PowerShell 执行 `Remove-Item Env:SPRING_FLYWAY_BASELINE_ON_MIGRATE`。
+- 如果已有商城表但没有 Flyway 历史表，先确认目标是本项目数据库，在运行下方命令前设置 `$env:SPRING_FLYWAY_BASELINE_ON_MIGRATE = 'true'`。Flyway 从版本 0 建立基线并执行待应用的迁移。确认迁移成功后，回到设置该变量的 PowerShell 执行 `Remove-Item Env:SPRING_FLYWAY_BASELINE_ON_MIGRATE`。
 
 ```powershell
 $credential = Get-Credential -Message '输入本地 rl_pay 数据库的用户名和密码'
@@ -142,7 +144,13 @@ requestPayment(merchantOrderNo):
 
 修改、取消和首次发起支付使用同一订单行锁。支付调用在商城事务外执行。假如支付单已经创建但商城写回失败，重试时仍会用相同的商户订单号和金额取得原支付单。
 
-支付入口是进程内网关方法 `MallPaymentGateway.createOrGet(request)`。请求字段为 `merchantCode`、`merchantOrderNo`、`amountCent`。响应字段为 `paymentOrderNo`、`status`，此处以 `CREATED` 表示初始状态。支付模块按 `(merchantCode, merchantOrderNo)` 建唯一约束，重复请求金额一致时返回已有支付单，金额冲突时拒绝。支付单保存在 `payment_order` 表。支付服务的内部查询可按平台支付单号或商户订单号查找，两种查询都附带来自受信调用方的商户号；查不到和不属于该商户均返回空。
+支付入口是进程内网关方法 `MallPaymentGateway.createOrGet(request)`。请求字段为 `merchantCode`、`merchantOrderNo`、`amountCent`。响应字段为 `paymentOrderNo`、`status`、`paymentUrl`。平台单先以 `CREATED` 提交，模拟渠道受理且平台关联提交后返回 `PENDING` 和付款链接。支付模块按 `(merchantCode, merchantOrderNo)` 建唯一约束，重复请求金额一致时返回已有支付单，金额冲突时拒绝。支付单保存在 `payment_order` 表。支付服务的内部查询可按平台支付单号或商户订单号查找，两种查询都附带来自受信调用方的商户号；查不到和不属于该商户均返回空。
+
+## 模拟付款
+
+将 `paymentUrl` 拼到当前 RLpay 服务地址，浏览器打开后可查看金额，并模拟付款。页面上的两种付款操作分别选择生成或跳过渠道成功事件。此阶段付款只改变模拟渠道交易，第 4 项再由平台接收渠道结果并推进平台状态。
+
+默认正常返回渠道应答。要模拟渠道已受理但首次应答超时，可以设置 `RLPAY_MOCK_CHANNEL_TIMEOUT_ON_FIRST_ACCEPT=true` 后启动，重新创建一笔商城订单。首次发起返回 `503`；对同一商户订单再次发起会返回同一笔渠道交易的付款链接。
 
 ## 验收示例
 
@@ -158,10 +166,11 @@ requestPayment(merchantOrderNo):
      },
      "paymentResponse": {
        "paymentOrderNo": "PAY-000001",
-       "status": "CREATED"
+       "status": "PENDING",
+       "paymentUrl": "/mock-payments/MOCK-152485fa-c488-4b0a-8a8f-fccdcda74000"
      }
    }
    ```
 
-3. 对同一订单再次发起支付，预期拿到同一支付单号。此时修改或取消该订单应返回 `409`。
+3. 对同一订单再次发起支付，预期拿到同一支付单号和付款链接。此时修改或取消该订单应返回 `409`。
 4. 另建一笔草稿，带当前版本修改数量并查回新金额。取消后查回 `CANCELLED`，再次取消仍应返回 `204`。
