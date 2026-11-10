@@ -9,3 +9,6 @@ spring:
     password: ${RLPAY_DB_PASSWORD}
   flyway:
     baseline-version: 0
+rlpay:
+  mock-channel:
+    timeout-on-first-accept: ${RLPAY_MOCK_CHANNEL_TIMEOUT_ON_FIRST_ACCEPT:false}

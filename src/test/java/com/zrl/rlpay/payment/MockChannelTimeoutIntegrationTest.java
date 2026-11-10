@@ -9,6 +9,8 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.concurrent.CountDownLatch;
@@ -21,13 +23,21 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /** 使用真实数据库验证渠道已受理但商城收到 503 时的重试。 */
-@SpringBootTest(properties = "rlpay.mock-channel.timeout-on-first-accept=true")
+@SpringBootTest
 @AutoConfigureMockMvc
 class MockChannelTimeoutIntegrationTest {
     @Autowired private MockMvc mvc;
     @Autowired private ObjectMapper json;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private PaymentOrderService orders;
+
+    /** 正常测试时提供开关；单独验证可直接从进程环境传入。 */
+    @DynamicPropertySource
+    static void enableTimeout(DynamicPropertyRegistry registry) {
+        if (System.getenv("RLPAY_MOCK_CHANNEL_TIMEOUT_ON_FIRST_ACCEPT") == null) {
+            registry.add("RLPAY_MOCK_CHANNEL_TIMEOUT_ON_FIRST_ACCEPT", () -> "true");
+        }
+    }
 
     /** 首次超时保留 CREATED，并发重试都绑定同一笔已提交的渠道交易。 */
     @Test

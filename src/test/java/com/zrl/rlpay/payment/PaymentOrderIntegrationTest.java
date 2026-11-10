@@ -31,6 +31,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -211,6 +212,24 @@ class PaymentOrderIntegrationTest {
         } finally {
             deleteMallOrder(orderNo);
             deleteMallOrder(silentOrder);
+        }
+    }
+
+    /** 第 4 步写入平台成功状态后，再发起只返回当前结果。 */
+    @Test
+    void successfulPlatformOrderReturnsStatusWithoutPaymentLink() throws Exception {
+        String orderNo = createMallOrder();
+        try {
+            launchMallPayment(orderNo);
+            String paymentNo = mallOrders.getOrder(orderNo).paymentOrderNo();
+            jdbc.update("UPDATE payment_order SET status = 'SUCCESS' WHERE payment_order_no = ?", paymentNo);
+            mvc.perform(post("/api/mall/orders/{orderNo}/payment", orderNo))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.paymentResponse.paymentOrderNo").value(paymentNo))
+                    .andExpect(jsonPath("$.paymentResponse.status").value("SUCCESS"))
+                    .andExpect(jsonPath("$.paymentResponse.paymentUrl").value(nullValue()));
+        } finally {
+            deleteMallOrder(orderNo);
         }
     }
 
