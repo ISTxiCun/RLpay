@@ -3,9 +3,12 @@ package com.zrl.rlpay.payment.stripe;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.HttpClientErrorException;
+import java.net.SocketTimeoutException;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -22,6 +25,8 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.queryParam;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withException;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 
 /** 用官方接口形状的 HTTP 替身验证 Checkout、查单和账单。 */
 class StripeSandboxComponentsTest {
@@ -51,6 +56,24 @@ class StripeSandboxComponentsTest {
         assertThat(result.paidAt()).isEqualTo(PAID);
         assertThat(result.amountCent()).isEqualTo(1290);
         assertThat(result.status()).isEqualTo("SUCCESS");
+        server.verify();
+    }
+
+    /** 超时、限流和渠道故障应保留待核实，凭据错误仍能被识别。 */
+    @Test
+    void temporaryLookupFailuresCanBeRetried() {
+        server.expect(request -> assertThat(request.getURI().getPath()).endsWith(SESSION))
+                .andRespond(withException(new SocketTimeoutException("fixture timeout")));
+        server.expect(request -> assertThat(request.getURI().getPath()).endsWith(SESSION))
+                .andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS));
+        server.expect(request -> assertThat(request.getURI().getPath()).endsWith(SESSION))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+        server.expect(request -> assertThat(request.getURI().getPath()).endsWith(SESSION))
+                .andRespond(withStatus(HttpStatus.UNAUTHORIZED));
+        assertThat(checkout.queryResult(SESSION)).isEmpty();
+        assertThat(checkout.queryResult(SESSION)).isEmpty();
+        assertThat(checkout.queryResult(SESSION)).isEmpty();
+        assertThatThrownBy(() -> checkout.queryResult(SESSION)).isInstanceOf(HttpClientErrorException.Unauthorized.class);
         server.verify();
     }
 

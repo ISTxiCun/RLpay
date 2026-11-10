@@ -8,7 +8,11 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.HttpServerErrorException;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
+import lombok.extern.slf4j.Slf4j;
 
 import java.net.URI;
 import java.time.Instant;
@@ -19,6 +23,7 @@ import static com.zrl.rlpay.payment.stripe.StripeSandboxProtocol.*;
 
 /** 负责 Stripe 测试 Checkout 的发起与结果查询。 */
 @Component
+@Slf4j
 @ConditionalOnProperty(name = "rlpay.stripe-sandbox.enabled", havingValue = "true")
 public class StripeCheckoutClient implements ChannelResultProvider {
     private final RestClient api;
@@ -75,9 +80,17 @@ public class StripeCheckoutClient implements ChannelResultProvider {
         if (!isSession(tradeNo)) {
             return Optional.empty();
         }
-        JsonNode session = api.get().uri(builder -> builder.path("/v1/checkout/sessions/{id}")
-                        .queryParam("expand[]", "payment_intent.latest_charge").build(tradeNo))
-                .retrieve().body(JsonNode.class);
+        JsonNode session;
+        try {
+            session = api.get().uri(builder -> builder.path("/v1/checkout/sessions/{id}")
+                            .queryParam("expand[]", "payment_intent.latest_charge").build(tradeNo))
+                    .retrieve().body(JsonNode.class);
+        } catch (ResourceAccessException | HttpClientErrorException.TooManyRequests
+                 | HttpServerErrorException temporaryFailure) {
+            log.debug("Stripe 查单暂不可用 tradeNo={} reason={}", tradeNo,
+                    temporaryFailure.getClass().getSimpleName());
+            return Optional.empty();
+        }
         if (!tradeNo.equals(validateSession(session))) {
             throw new IllegalStateException("Stripe 查单返回了其他会话");
         }
