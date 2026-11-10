@@ -80,7 +80,7 @@ mysql --host=127.0.0.1 --user=root --password --default-character-set=utf8mb4 --
 
 订单详情包含 `merchantOrderNo`、`status`、`version`、`totalAmountCent`、可空的 `paymentOrderNo`，以及明细 `items`。明细包含 `productCode`、`productName`、`unitPriceCent`、`quantity`。商品编码作为稳定标识使用。
 
-订单明细至少一行，最多 20 行。同一商品在一笔订单中只能出现一次，每行数量为 1–99。非法明细或金额溢出返回 `400`，商品或订单不存在返回 `404`，商品已停用、草稿版本过期或状态冲突返回 `409`。同一商户订单已有支付单但金额不一致时返回 `409`。支付模块暂时不可用时返回 `503`，调用方可以对同一商户订单重试。
+订单明细至少一行，最多 20 行。同一商品在一笔订单中只能出现一次，每行数量为 1–99。非法明细或金额溢出返回 `400`，商品或订单不存在返回 `404`，商品已停用、草稿版本过期或状态冲突返回 `409`。同一商户订单已有支付单但金额不一致时返回 `409`。商城订单已支付时再次发起，返回原平台支付单号及成功状态，付款链接为空。支付模块暂时不可用时返回 `503`，调用方可以对同一商户订单重试。
 
 ## 商城伪代码
 
@@ -128,7 +128,7 @@ requestPayment(merchantOrderNo):
     商城事务一:
         按订单号锁定订单行
         如果是 DRAFT，将状态改为 PAYMENT_REQUESTED，version 加 1
-        否则要求状态为 PAYMENT_REQUESTED
+        否则要求状态为 PAYMENT_REQUESTED 或 PAID
         request = (MALL_MOCK, merchantOrderNo, order.totalAmountCent)
     提交事务一，释放商城订单行锁
 

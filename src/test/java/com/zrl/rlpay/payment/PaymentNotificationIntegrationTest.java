@@ -18,7 +18,9 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /** 使用真实 MySQL 验证支付确认、商城入账以及投递恢复。 */
@@ -65,9 +67,9 @@ class PaymentNotificationIntegrationTest {
         }
     }
 
-    /** 首次失败退避，恢复后补写单号；确认丢失与迟到写回不会重复推进。 */
+    /** 首次失败退避，后续由通知工作进程补写单号并确认送达。 */
     @Test
-    void failureAndLostAcknowledgementCanBeRetried() throws Exception {
+    void firstFailureRecoversThroughTheWorker() throws Exception {
         String orderNo = createMallOrder();
         try {
             var request = mall.freezeForPayment(orderNo);
@@ -88,6 +90,27 @@ class PaymentNotificationIntegrationTest {
             notifications.deliverDue();
             assertThat(attempts(paymentNo)).isEqualTo(1);
 
+            makeDue(paymentNo);
+            notifications.deliverDue();
+            assertThat(notificationStatus(paymentNo)).isEqualTo("DELIVERED");
+            assertThat(attempts(paymentNo)).isEqualTo(2);
+            assertThat(mall.getOrder(orderNo).status().name()).isEqualTo("PAID");
+            assertThat(mall.getOrder(orderNo).paymentOrderNo()).isEqualTo(paymentNo);
+        } finally {
+            cleanup(orderNo);
+        }
+    }
+
+    /** 确认丢失后租约可恢复，已支付重试和迟到写回不会重复更新。 */
+    @Test
+    void lostAcknowledgementAndMallRetryAreIdempotent() throws Exception {
+        String orderNo = createMallOrder();
+        try {
+            var request = mall.freezeForPayment(orderNo);
+            var response = gateway.createOrGet(request);
+            String paymentNo = response.paymentOrderNo();
+            channel.complete(tradeNo(response), true);
+
             // 模拟商城事务已提交，工作进程在确认送达前退出。
             mall.confirmPayment(new MallOrderService.PaymentConfirmation(request.merchantCode(), orderNo,
                     paymentNo, request.amountCent()));
@@ -102,9 +125,16 @@ class PaymentNotificationIntegrationTest {
             makeDue(paymentNo);
             notifications.deliverDue();
             assertThat(notificationStatus(paymentNo)).isEqualTo("DELIVERED");
-            assertThat(attempts(paymentNo)).isEqualTo(2);
+            assertThat(attempts(paymentNo)).isEqualTo(1);
 
             mall.savePaymentOrderNo(orderNo, paymentNo);
+            mvc.perform(post("/api/mall/orders/{orderNo}/payment", orderNo))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.paymentResponse.paymentOrderNo").value(paymentNo))
+                    .andExpect(jsonPath("$.paymentResponse.status").value("SUCCESS"))
+                    .andExpect(jsonPath("$.paymentResponse.paymentUrl").value(nullValue()));
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM mock_channel_trade WHERE payment_order_no = ?",
+                    Integer.class, paymentNo)).isEqualTo(1);
             assertThat(mall.getOrder(orderNo).version()).isEqualTo(paid.version());
             assertThat(mall.getOrder(orderNo).status().name()).isEqualTo("PAID");
             assertThat(mall.getOrder(orderNo).paymentOrderNo()).isEqualTo(paymentNo);

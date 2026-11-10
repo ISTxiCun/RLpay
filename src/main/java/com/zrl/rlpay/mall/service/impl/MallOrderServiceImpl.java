@@ -118,8 +118,8 @@ public class MallOrderServiceImpl implements MallOrderService {
                 order.setStatus(MallOrderStatus.PAYMENT_REQUESTED);
                 updateOrderRow(order);
             }
-            case PAYMENT_REQUESTED -> {
-                // 重试沿用已经冻结的金额。
+            case PAYMENT_REQUESTED, PAID -> {
+                // 已发起或已支付的订单重试时沿用冻结金额。
             }
             default -> throw new ResponseStatusException(HttpStatus.CONFLICT, "当前订单状态不可发起支付");
         }
