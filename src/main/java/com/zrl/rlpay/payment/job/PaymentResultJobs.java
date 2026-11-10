@@ -43,7 +43,7 @@ public class PaymentResultJobs {
                 SELECT p.id, p.payment_order_no, p.merchant_code, p.merchant_order_no, p.amount_cent
                 FROM payment_order p
                 WHERE p.status = ? AND (p.next_check_at_utc IS NULL OR p.next_check_at_utc <= UTC_TIMESTAMP(3))
-                  AND ((p.status = 'PENDING' AND p.channel_code = 'MOCK' AND p.channel_trade_no IS NOT NULL)
+                  AND ((p.status = 'PENDING' AND p.channel_code IS NOT NULL AND p.channel_trade_no IS NOT NULL)
                     OR (p.status = 'CREATED' AND EXISTS (
                         SELECT 1 FROM mock_channel_trade m WHERE m.payment_order_no = p.payment_order_no)))
                 ORDER BY p.next_check_at_utc, p.id LIMIT 50

@@ -14,3 +14,7 @@ rlpay:
     timeout-on-first-accept: ${RLPAY_MOCK_CHANNEL_TIMEOUT_ON_FIRST_ACCEPT:false}
   reconciliation:
     import-enabled: ${RLPAY_RECONCILIATION_IMPORT_ENABLED:false}
+  stripe-sandbox:
+    enabled: ${RLPAY_STRIPE_SANDBOX_ENABLED:false}
+    success-url: ${RLPAY_STRIPE_SANDBOX_SUCCESS_URL:}
+    cancel-url: ${RLPAY_STRIPE_SANDBOX_CANCEL_URL:}

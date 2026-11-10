@@ -18,7 +18,7 @@ import java.util.regex.Pattern;
 final class BillCsvParser {
     private static final int MAX_ROWS = 10_000;
     static final Pattern CHANNEL_CODE = Pattern.compile("[A-Za-z0-9_-]{1,32}");
-    private static final Pattern TRADE_NO = Pattern.compile("[A-Za-z0-9._-]{1,64}");
+    private static final Pattern TRADE_NO = Pattern.compile("[A-Za-z0-9._-]{1,255}");
     private static final Pattern CENTS = Pattern.compile("[0-9]+");
     private static final List<String> HEADER = List.of(
             "channel_code", "channel_trade_no", "amount_cent", "status", "paid_at");

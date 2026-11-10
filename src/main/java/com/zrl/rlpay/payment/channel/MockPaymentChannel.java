@@ -20,7 +20,7 @@ import java.util.UUID;
 /** 模拟渠道的持久化交易、查单和成功事件。 */
 @Service
 @Slf4j
-public class MockPaymentChannel {
+public class MockPaymentChannel implements ChannelResultProvider {
     public static final String CODE = "MOCK";
     public static final String PAYMENT_PATH = "/mock-payments";
 
@@ -65,6 +65,19 @@ public class MockPaymentChannel {
     /** 按渠道交易号查看渠道状态、金额及首次成功时间。 */
     public Optional<Trade> query(String channelTradeNo) {
         return findBy("channel_trade_no", channelTradeNo);
+    }
+
+    /** 返回模拟渠道的固定编码。 */
+    @Override
+    public String channelCode() {
+        return CODE;
+    }
+
+    /** 将模拟查询结果转换成平台结果。 */
+    @Override
+    public Optional<Result> queryResult(String tradeNo) {
+        return query(tradeNo).map(trade -> new Result(CODE, trade.channelTradeNo(),
+                trade.amountCent(), trade.status(), trade.paidAt()));
     }
 
     /** 模拟付款成功；只在首次更新提交后按选项发出渠道成功事件。 */
