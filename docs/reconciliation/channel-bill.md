@@ -11,7 +11,7 @@ channel_code,channel_trade_no,amount_cent,status,paid_at
 MOCK,MOCK-sample-001,1290,SUCCESS,2026-11-11T00:30:00+08:00
 ```
 
-交易号允许字母、数字、点、下划线和连字符，最多 64 字符。金额为正整数分，状态为 `SUCCESS`，支付时间使用包含 UTC 偏移的 ISO-8601 格式。示例属于 `Asia/Shanghai` 的 2026-11-11 账单。
+交易号允许字母、数字、点、下划线和连字符，最多 255 字符。金额为正整数分，状态为 `SUCCESS`，支付时间使用包含 UTC 偏移的 ISO-8601 格式。示例属于 `Asia/Shanghai` 的 2026-11-11 账单。
 
 ## 本地联调
 
